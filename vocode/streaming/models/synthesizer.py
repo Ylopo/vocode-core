@@ -143,7 +143,7 @@ RIME_DEFAULT_SPEAKER = "young_male_unmarked-1"
 RIME_DEFAULT_SPEED_ALPHA = 1.0
 RIME_DEFAULT_SAMPLE_RATE = SamplingRate.RATE_22050
 RIME_DEFAULT_REDUCE_LATENCY = False
-RimeModelId = Literal["mist", "v1"]
+RimeModelId = Literal["mist", "v1", "mistv2"]
 
 
 class RimeSynthesizerConfig(SynthesizerConfig, type=SynthesizerType.RIME.value):  # type: ignore
