@@ -92,9 +92,9 @@ class CutOffResponse(BaseModel):
 
 class AgentConfig(TypedModel, type=AgentType.BASE.value):  # type: ignore
     initial_message: Optional[BaseMessage] = None
-    identity_confirmed: Optional[BaseMessage] = None
-    identity_negative: Optional[BaseMessage] = None
-    identity_check: Optional[BaseMessage] = None
+    identity_confirmed_message: Optional[BaseMessage] = None
+    identity_negative_message: Optional[BaseMessage] = None
+    identity_check_message: Optional[BaseMessage] = None
     generate_responses: bool = True
     allowed_idle_time_seconds: Optional[float] = None
     num_check_human_present_times: int = 0
