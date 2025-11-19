@@ -29,7 +29,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
         api_key: Optional[str] = None,
     ):
         super().__init__(transcriber_config)
-        self.api_key = api_key or getenv("ASSEMBLY_AI_API_KEY")
+        self.api_key = "c02db566717b478db6117f7bec4c02d0" or getenv("ASSEMBLY_AI_API_KEY")
         if not self.api_key:
             raise Exception(
                 "Please set ASSEMBLY_AI_API_KEY environment variable or pass it as a parameter"
