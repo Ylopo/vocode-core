@@ -57,6 +57,7 @@ from vocode.streaming.synthesizer.base_synthesizer import (
 from vocode.streaming.synthesizer.input_streaming_synthesizer import InputStreamingSynthesizer
 from vocode.streaming.transcriber.base_transcriber import BaseTranscriber
 from vocode.streaming.transcriber.deepgram_transcriber import DeepgramTranscriber
+from vocode.streaming.transcriber.assembly_ai_transcriber import AssemblyAITranscriber
 from vocode.streaming.utils import (
     create_conversation_id,
     enumerate_async_iter,
@@ -156,8 +157,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.interruptible_event_factory = interruptible_event_factory
             self.in_interrupt_endpointing_config = False
             self.deepgram_transcriber: Optional[DeepgramTranscriber] = None
+            self.assembly_ai_transcriber: Optional[AssemblyAITranscriber] = None
             if isinstance(self.conversation.transcriber, DeepgramTranscriber):
                 self.deepgram_transcriber = self.conversation.transcriber
+            elif isinstance(self.conversation.transcriber, AssemblyAITranscriber):
+                self.assembly_ai_transcriber = self.conversation.transcriber
             self.has_associated_ignored_utterance: bool = False
             self.has_associated_unignored_utterance: bool = False
             self.human_backchannels_buffer: List[Transcription] = []
