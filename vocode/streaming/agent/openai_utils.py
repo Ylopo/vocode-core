@@ -125,6 +125,9 @@ def format_openai_chat_messages_from_transcript(
         messages=chat_messages,
         model=model_name,
     ) + num_tokens_from_functions(functions=functions, model=model_name)
+    
+    logger.info(f"Context size: {context_size}")
+    logger.info(f"Model Name: {model_name}")
 
     num_removed_messages = 0
     while (
