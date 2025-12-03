@@ -168,6 +168,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.ignore_next_message: bool = False
 
         def should_ignore_utterance(self, transcription: Transcription):
+            logger.info(f"Checking if should ignore utterance: {transcription.message}")
             if self.has_associated_unignored_utterance:
                 return False
             bot_still_speaking = self.is_bot_still_speaking()
@@ -179,6 +180,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             return False
 
         def is_transcription_backchannel(self, transcription: Transcription):
+            logger.info(f"Checking if transcription is backchannel: {transcription.message}")
             num_words = len(transcription.message.strip().split())
             if (
                 self.conversation.agent.get_agent_config().interrupt_sensitivity == "high"
@@ -188,55 +190,76 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 return False
 
             if num_words <= LOW_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD:
+                logger.info(
+                    f"Low interrupt sensitivity; {num_words} word(s) is a backchannel candidate"
+                )
                 return True
             cleaned = re.sub("[^\w\s]", "", transcription.message).strip().lower()
+            logger.info(f"Cleaned transcription for backchannel matching: {cleaned}")
             return any(re.fullmatch(regex, cleaned) for regex in BACKCHANNEL_PATTERNS)
 
         def _most_recent_transcript_messages(self) -> Iterator[Message]:
-            return (
-                event_log
-                for event_log in reversed(self.conversation.transcript.event_logs)
-                if isinstance(event_log, Message)
-            )
+            logger.info("Called _most_recent_transcript_messages()")
+            count = 0
+            for event_log in reversed(self.conversation.transcript.event_logs):
+                if isinstance(event_log, Message):
+                    logger.debug(f"Yielding Message: {event_log}")
+                    count += 1
+                    yield event_log
+            logger.info(f"Total messages yielded: {count}")
 
         def get_maybe_last_transcript_event_log(self) -> Optional[Message]:
-            return next(self._most_recent_transcript_messages(), None)
+            last_message = next(self._most_recent_transcript_messages(), None)
+            logger.info(f"Most recent transcript message: {last_message}")
+            return last_message
 
         def is_bot_in_medias_res(self):
             last_message = self.get_maybe_last_transcript_event_log()
-            return (
+            logger.info(f"[is_bot_in_medias_res] last_message: {last_message}")
+            result = (
                 last_message is not None
                 and not last_message.is_backchannel
                 and last_message.sender == Sender.BOT
                 and not last_message.is_final
                 and last_message.text.strip() != ""
             )
+            logger.info(f"[is_bot_in_medias_res] Returning: {result}")
+            return result
 
         def is_bot_still_speaking(self):  # in_medias_res OR bot has more utterances
             transcript_messages_iter = self._most_recent_transcript_messages()
             last_message, second_to_last_message = next(transcript_messages_iter, None), next(
                 transcript_messages_iter, None
             )
+            logger.info(
+            f"[is_bot_still_speaking] last_message: {last_message}, second_to_last_message: {second_to_last_message}"
+            )    
 
             is_first_bot_message = (
                 second_to_last_message is None or second_to_last_message.sender == Sender.HUMAN
             )
+            logger.info(f"[is_bot_still_speaking] is_first_bot_message: {is_first_bot_message}")
 
-            return (
-                last_message is not None
-                and not last_message.is_backchannel
-                and last_message.sender == Sender.BOT
-                and (not last_message.is_final or not last_message.is_end_of_turn)
-                and not (is_first_bot_message and last_message.text.strip() == "")
+            result = (
+            last_message is not None
+            and not last_message.is_backchannel
+            and last_message.sender == Sender.BOT
+            and (not last_message.is_final or not last_message.is_end_of_turn)
+            and not (is_first_bot_message and last_message.text.strip() == "")
             )
+            logger.info(f"[is_bot_still_speaking] Returning: {result}")
+            return result
 
         async def process(self, transcription: Transcription):
+            logger.info(f"Processing transcription: {transcription.message}")
             self.conversation.mark_last_action_timestamp()
             if transcription.message.strip() == "":
                 logger.info("Ignoring empty transcription")
                 return
             # ignore utterances during the initial message but still add them to the transcript
             initial_message_ongoing = not self.conversation.initial_message_tracker.is_set()
+            logger.info(f"Initial message uninterruptible, ongoing message: {initial_message_ongoing}")
+
             if initial_message_ongoing or self.should_ignore_utterance(transcription):
                 logger.info(
                     f"Ignoring utterance: {transcription.message}. IMO: {initial_message_ongoing}"
@@ -244,9 +267,13 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 self.has_associated_ignored_utterance = (
                     not transcription.is_final  # if it's final, we're done with this backchannel
                 )
+                logger.info(f"Incomplete utterance: {self.has_associated_ignored_utterance}")
                 if transcription.is_final:
                     # for all ignored backchannels, store them to be added to the transcript later
                     self.human_backchannels_buffer.append(transcription)
+                    logger.info(
+                        f"Buffered backchannel: {transcription.message}. Buffer size: {len(self.human_backchannels_buffer)}"
+                    )
                 return
             if self.ignore_next_message and transcription.is_final:
                 # TODO: delete this once transcription reset is implemented for processing conference voicemail
@@ -272,10 +299,12 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     )
                 )
             if not self.conversation.is_human_speaking:
+                logger.debug("Human started speaking, checking for interrupt")
                 self.conversation.current_transcription_is_interrupt = (
                     await self.conversation.broadcast_interrupt()
                 )
                 self.has_associated_unignored_utterance = not transcription.is_final
+                logger.info(f"Human is speaking, unignored utterance ongoing: {self.has_associated_unignored_utterance}")
                 if self.conversation.current_transcription_is_interrupt:
                     logger.debug(
                         f"Interrupting transcription: {transcription.message}, confidence: {transcription.confidence}"
@@ -283,10 +312,13 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     logger.debug("sent interrupt")
                 logger.debug("Human started speaking")
                 self.conversation.is_human_still_there = True
+                logger.debug(f"Marked human as still there: {self.conversation.is_human_still_there}")
 
             transcription.is_interrupt = self.conversation.current_transcription_is_interrupt
+            logger.debug(f"Transcription is_interrupt: {transcription.is_interrupt}")
             self.conversation.is_human_speaking = not transcription.is_final
             if transcription.is_final:
+                logger.debug("Final transcription received, resetting interrupt state")
                 self.has_associated_ignored_utterance = False
                 self.has_associated_unignored_utterance = False
                 agent_response_tracker = None
@@ -298,16 +330,20 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         conversation_id=self.conversation.id,
                         is_backchannel=True,
                     )
+                    logger.debug(f"Added backchannel to transcript: {human_backchannel.message}")
                 self.human_backchannels_buffer = []
 
                 if transcription.is_interrupt:
                     transcription.bot_was_in_medias_res = self.is_bot_in_medias_res()
+                    logger.debug(f"Transcription caused interrupt; bot_was_in_medias_res: {transcription.bot_was_in_medias_res}")
                     logger.debug(
                         f"Bot is {'not ' if not transcription.bot_was_in_medias_res else ''}in medias res"
                     )
 
                 self.conversation.speed_manager.update(transcription)
+                logger.info("Setting speed manager")
 
+                logger.info("Warming up synthesizer after final transcription")
                 self.conversation.warmup_synthesizer()
 
                 # we use getattr here to avoid the dependency cycle between PhoneConversation and StreamingConversation
@@ -320,6 +356,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         agent_response_tracker=agent_response_tracker,
                     ),
                 )
+                logger.info(f"Sending transcription to agent: {event}")
                 self.consumer.consume_nonblocking(event)
 
     class FillerAudioWorker(InterruptibleWorker[InterruptibleAgentResponseEvent[FillerAudio]]):
