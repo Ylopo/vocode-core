@@ -263,6 +263,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         stream = await self._create_openai_stream(chat_parameters)
         
         ttft_logged = False
+        llm_response_raw = []
 
         response_generator = collate_response_async
         using_input_streaming_synthesizer = (
@@ -285,8 +286,20 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             if not ttft_logged:
                 ttft_logged = True
                 llm_first_token = time.perf_counter()
-                logger.info(f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}; Human input: {human_input}")
 
+            msg_text = None
+            if using_input_streaming_synthesizer and isinstance(message, LLMToken):
+                msg_text = getattr(message, "text", None)
+            elif isinstance(message, str):
+                msg_text = message
+            elif isinstance(message, BaseMessage):
+                msg_text = getattr(message, "text", None)
+            elif hasattr(message, "text"):
+                msg_text = message.text
+            
+            if msg_text:
+                llm_response_raw.append(msg_text)
+            
             ResponseClass = (
                 StreamedResponse if using_input_streaming_synthesizer else GeneratedResponse
             )
@@ -302,6 +315,15 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
                     is_interruptible=True,
                 )
             idx += 1
+        
+        llm_response_text = "".join(llm_response_raw).strip()
+        llm_request_end = time.perf_counter()
+        if not ttft_logged:
+            llm_first_token = llm_request_end
+        logger.info(f"Human Input: {human_input!r}")
+        logger.info(f"LLM Output: {llm_response_text!r}")
+        logger.info(f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}")
+        logger.info(f"LLM Total Time (ms): {1000 * (llm_request_end - llm_request_start):.2f}")
 
     async def terminate(self):
         if hasattr(self, "vector_db") and self.vector_db is not None:
