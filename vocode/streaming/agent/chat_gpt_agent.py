@@ -321,9 +321,9 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         if not ttft_logged:
             llm_first_token = llm_request_end
         logger.info(f"Human Input: {human_input!r}")
-        logger.info(f"LLM Output: {llm_response_text!r}")
-        logger.info(f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}")
-        logger.info(f"LLM Total Time (ms): {1000 * (llm_request_end - llm_request_start):.2f}")
+        logger.info(
+            f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}; LLM Total Time (ms): {1000 * (llm_request_end - llm_request_start):.2f}; LLM Output: {llm_response_text!r}"
+        )
 
     async def terminate(self):
         if hasattr(self, "vector_db") and self.vector_db is not None:
