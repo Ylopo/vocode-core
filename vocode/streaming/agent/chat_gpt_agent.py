@@ -1,4 +1,5 @@
 import os
+import time
 import random
 from typing import Any, AsyncGenerator, Dict, List, Optional, TypeVar, Union
 
@@ -256,8 +257,13 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         ttft_span = sentry_create_span(
             sentry_callable=sentry_sdk.start_span, op=CustomSentrySpans.TIME_TO_FIRST_TOKEN
         )
+        
+        logger.info(f"Sending to LLM (OpenAI): Human input: {human_input}")
+        llm_request_start = time.perf_counter()
 
         stream = await self._create_openai_stream(chat_parameters)
+        
+        ttft_logged = False
 
         response_generator = collate_response_async
         using_input_streaming_synthesizer = (
@@ -265,6 +271,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         )
         if using_input_streaming_synthesizer:
             response_generator = stream_response_async
+        idx = 0
         async for message in response_generator(
             conversation_id=conversation_id,
             gen=openai_get_tokens(
@@ -275,6 +282,11 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         ):
             if first_sentence_total_span:
                 first_sentence_total_span.finish()
+
+            if not ttft_logged:
+                ttft_logged = True
+                llm_first_token = time.perf_counter()
+                logger.info(f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}")
 
             ResponseClass = (
                 StreamedResponse if using_input_streaming_synthesizer else GeneratedResponse
@@ -290,6 +302,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
                     message=message,
                     is_interruptible=True,
                 )
+            idx += 1
 
     async def terminate(self):
         if hasattr(self, "vector_db") and self.vector_db is not None:
