@@ -257,8 +257,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         ttft_span = sentry_create_span(
             sentry_callable=sentry_sdk.start_span, op=CustomSentrySpans.TIME_TO_FIRST_TOKEN
         )
-        
-        logger.info(f"Sending to LLM (OpenAI): Human input: {human_input}")
+
         llm_request_start = time.perf_counter()
 
         stream = await self._create_openai_stream(chat_parameters)
@@ -286,7 +285,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             if not ttft_logged:
                 ttft_logged = True
                 llm_first_token = time.perf_counter()
-                logger.info(f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}")
+                logger.info(f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}; Human input: {human_input}")
 
             ResponseClass = (
                 StreamedResponse if using_input_streaming_synthesizer else GeneratedResponse
