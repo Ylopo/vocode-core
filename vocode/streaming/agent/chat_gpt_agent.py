@@ -259,9 +259,8 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         )
 
         llm_request_start = time.perf_counter()
+
         stream = await self._create_openai_stream(chat_parameters)
-        async for chunk in stream:
-            logger.info(f"OpenAI Stream Chunk: {chunk!r}")
 
         ttft_logged = False
         llm_response_raw = []
@@ -321,6 +320,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         llm_request_end = time.perf_counter()
         if not ttft_logged:
             llm_first_token = llm_request_end
+        logger.info(f"Human Input: {human_input!r}")    
         logger.info(
             f"LLM TTFT (ms): {1000 * (llm_first_token - llm_request_start):.2f}; LLM Total Time (ms): {1000 * (llm_request_end - llm_request_start):.2f}; LLM Output: {llm_response_text!r}"
         )
