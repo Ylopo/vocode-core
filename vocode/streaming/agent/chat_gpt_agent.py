@@ -259,7 +259,6 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         )
 
         llm_request_start = time.perf_counter()
-
         logger.info(f"Stream: {stream!r}")
         stream = await self._create_openai_stream(chat_parameters)
         
