@@ -84,7 +84,7 @@ class OutboundCall:
             raise ValueError("No telephony config provided")
 
     async def start(self):
-        logger.debug("Starting outbound call")
+        logger.debug("Starting outbound call for conversation_id={}", self.conversation_id)
         self.telephony_id = await self.telephony_client.create_call(
             conversation_id=self.conversation_id,
             to_phone=self.to_phone,
