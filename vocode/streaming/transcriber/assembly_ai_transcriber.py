@@ -54,6 +54,9 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
             if silence_ms is not None else None
         )
 
+        async def _run_loop(self):
+            await self.process()
+
         async with websockets.connect(
             url,
             extra_headers={"Authorization": self.api_key},
