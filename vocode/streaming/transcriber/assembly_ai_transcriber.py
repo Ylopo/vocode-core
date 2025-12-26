@@ -45,6 +45,9 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
             params["word_boost"] = json.dumps(self.transcriber_config.word_boost)
         return f"{ASSEMBLYAI_WS_URL}?{ '&'.join([f'{k}={v}' for k, v in params.items()]) }"
 
+    async def _run_loop(self):
+            await self.process()
+            
     async def process(self):
         url = self.get_assemblyai_url()
         logger.info(f"Connecting to AssemblyAI at {url}")
@@ -53,9 +56,6 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
             json.dumps({"end_utterance_silence_threshold": silence_ms})
             if silence_ms is not None else None
         )
-
-        async def _run_loop(self):
-            await self.process()
 
         async with websockets.connect(
             url,
