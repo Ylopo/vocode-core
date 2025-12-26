@@ -1,10 +1,8 @@
 import asyncio
-import audioop
+import base64
 import json
 from typing import Optional
-from urllib.parse import urlencode
 
-import numpy as np
 import websockets
 from loguru import logger
 
@@ -16,11 +14,9 @@ from vocode.streaming.models.transcriber import (
     TimeEndpointingConfig,
     Transcription,
 )
-from vocode.streaming.models.websocket import AudioMessage
 from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
 
-ASSEMBLY_AI_URL = "wss://api.assemblyai.com/v2/realtime/ws"
-
+ASSEMBLYAI_WS_URL = "wss://api.assemblyai.com/v2/realtime/ws"
 
 class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
     def __init__(
@@ -29,116 +25,83 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
         api_key: Optional[str] = None,
     ):
         super().__init__(transcriber_config)
-        self.api_key = "c02db566717b478db6117f7bec4c02d0" or getenv("ASSEMBLY_AI_API_KEY")
+        self.api_key = "c02db566717b478db6117f7bec4c02d0" or getattr(transcriber_config, 'api_key', None) or getenv("ASSEMBLY_AI_API_KEY")
         if not self.api_key:
-            raise Exception(
-                "Please set ASSEMBLY_AI_API_KEY environment variable or pass it as a parameter"
-            )
+            raise Exception("Please set ASSEMBLY_AI_API_KEY environment variable or pass it as a parameter")
         self._ended = False
-        self.buffer = bytearray()
-        self.audio_cursor = 0
-
-        if isinstance(
-            self.transcriber_config.endpointing_config,
-            (TimeEndpointingConfig, PunctuationEndpointingConfig),
-        ):
-            self.transcriber_config.end_utterance_silence_threshold_milliseconds = int(
-                self.transcriber_config.endpointing_config.time_cutoff_seconds * 1000
-            )
-        self.terminate_msg = json.dumps({"terminate_session": True})
-        self.end_utterance_silence_threshold_msg = (
-            None
-            if self.transcriber_config.end_utterance_silence_threshold_milliseconds is None
-            else json.dumps(
-                {
-                    "end_utterance_silence_threshold": self.transcriber_config.end_utterance_silence_threshold_milliseconds
-                }
-            )
-        )
 
     async def ready(self):
         return True
-
-    async def _run_loop(self):
-        await self.process()
-
-    def send_audio(self, chunk):
-        if self.transcriber_config.audio_encoding == AudioEncoding.MULAW:
-            sample_width = 1
-            if isinstance(chunk, np.ndarray):
-                chunk = chunk.astype(np.int16)
-                chunk = chunk.tobytes()
-            chunk = audioop.ulaw2lin(chunk, sample_width)
-
-        self.buffer.extend(chunk)
-
-        if (
-            len(self.buffer) / (2 * self.transcriber_config.sampling_rate)
-        ) >= self.transcriber_config.buffer_size_seconds:
-            self.consume_nonblocking(self.buffer)
-            self.buffer = bytearray()
 
     async def terminate(self):
         self._ended = True
         await super().terminate()
 
-    def get_assembly_ai_url(self):
-        url_params = {"sample_rate": self.transcriber_config.sampling_rate}
-        if self.transcriber_config.word_boost:
-            url_params.update({"word_boost": json.dumps(self.transcriber_config.word_boost)})
-        return ASSEMBLY_AI_URL + f"?{urlencode(url_params)}"
+    def get_assemblyai_url(self):
+        params = {
+            "sample_rate": self.transcriber_config.sampling_rate
+        }
+        if getattr(self.transcriber_config, "word_boost", None):
+            params["word_boost"] = json.dumps(self.transcriber_config.word_boost)
+        return f"{ASSEMBLYAI_WS_URL}?{ '&'.join([f'{k}={v}' for k, v in params.items()]) }"
 
     async def process(self):
-        self.audio_cursor = 0
-        URL = self.get_assembly_ai_url()
+        url = self.get_assemblyai_url()
+        logger.info(f"Connecting to AssemblyAI at {url}")
+        silence_ms = getattr(self.transcriber_config, "end_utterance_silence_threshold_milliseconds", None)
+        silence_msg = (
+            json.dumps({"end_utterance_silence_threshold": silence_ms})
+            if silence_ms is not None else None
+        )
 
         async with websockets.connect(
-            URL,
-            extra_headers=(("Authorization", self.api_key),),
+            url,
+            extra_headers={"Authorization": self.api_key},
             ping_interval=5,
             ping_timeout=20,
+            max_size=1024*1024,
         ) as ws:
-            await asyncio.sleep(0.1)
+            if silence_msg:
+                await ws.send(silence_msg)
+            logger.info("Sent silence threshold config to AssemblyAI")
 
-            if self.end_utterance_silence_threshold_msg:
-                await ws.send(self.end_utterance_silence_threshold_msg)
-
-            async def sender(ws):  # sends audio to websocket
+            async def sender():
                 while not self._ended:
                     try:
-                        data = await asyncio.wait_for(self._input_queue.get(), 5)
-                    except asyncio.exceptions.TimeoutError:
+                        data = await asyncio.wait_for(self._input_queue.get(), timeout=5)
+                    except asyncio.TimeoutError:
                         break
-                    num_channels = 1
-                    sample_width = 2
-                    self.audio_cursor += len(data) / (
-                        self.transcriber_config.sampling_rate * num_channels * sample_width
-                    )
-                    await ws.send(json.dumps({"audio_data": AudioMessage.from_bytes(data).data}))
-                await ws.send(self.terminate_msg)
-                logger.debug("Terminating AssemblyAI transcriber sender")
+                    if self.transcriber_config.audio_encoding != AudioEncoding.LINEAR16:
+                        logger.error("AssemblyAI requires LINEAR16 audio encoding")
+                        continue
+                    # Base64 encode the audio bytes for AssemblyAI
+                    audio_b64 = base64.b64encode(data).decode("utf-8")
+                    await ws.send(json.dumps({"audio_data": audio_b64}))
+                # Terminate gracefully as per docs
+                await ws.send(json.dumps({"terminate_session": True}))
+                logger.info("Sent terminate_session to AssemblyAI websocket")
 
-            async def receiver(ws):
+            async def receiver():
                 while not self._ended:
                     try:
-                        result_str = await ws.recv()
-                        data = json.loads(result_str)
-                        if "error" in data and data["error"]:
-                            raise Exception(data["error"])
-                    except websockets.exceptions.ConnectionClosedError as e:
-                        logger.debug(e)
+                        msg = await ws.recv()
+                    except (websockets.ConnectionClosed, asyncio.TimeoutError):
                         break
+                    data = json.loads(msg)
+                    if "error" in data and data["error"]:
+                        logger.error(f"AssemblyAI error: {data['error']}")
+                        break
+                    # Handle PartialTranscript / FinalTranscript events
+                    if "message_type" in data:
+                        if data["message_type"] in ("PartialTranscript", "FinalTranscript"):
+                            text = data.get("text", "")
+                            if text:
+                                self.produce_nonblocking(
+                                    Transcription(
+                                        message=text,
+                                        confidence=data.get("confidence", 1.0),
+                                        is_final=(data["message_type"] == "FinalTranscript"),
+                                    )
+                                )
 
-                    data = json.loads(result_str)
-                    is_final = "message_type" in data and data["message_type"] == "FinalTranscript"
-
-                    if "text" in data and data["text"]:
-                        self.produce_nonblocking(
-                            Transcription(
-                                message=data["text"],
-                                confidence=data["confidence"],
-                                is_final=is_final,
-                            )
-                        )
-
-            await asyncio.gather(sender(ws), receiver(ws))
+            await asyncio.gather(sender(), receiver())
