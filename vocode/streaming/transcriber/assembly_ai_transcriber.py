@@ -1,4 +1,5 @@
 import asyncio
+import audioop
 import base64
 import json
 from typing import Optional
@@ -16,7 +17,7 @@ from vocode.streaming.models.transcriber import (
 )
 from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
 
-ASSEMBLYAI_WS_URL = "wss://api.assemblyai.com/v2/realtime/ws"
+ASSEMBLYAI_WS_URL = "wss://api.assemblyai.com/v2/universal/stream/ws"
 
 class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
     def __init__(
@@ -47,7 +48,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
     async def _run_loop(self):
             await self.process()
-            
+
     async def process(self):
         url = self.get_assemblyai_url()
         logger.info(f"Connecting to AssemblyAI at {url}")
@@ -76,8 +77,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                         break
                     if self.transcriber_config.audio_encoding != AudioEncoding.LINEAR16:
                         logger.error("AssemblyAI requires LINEAR16 audio encoding")
-                        continue
-                    # Base64 encode the audio bytes for AssemblyAI
+                        data = audioop.ulaw2lin(data, 2)  # 2 bytes/sample = 16 bits/sample
                     audio_b64 = base64.b64encode(data).decode("utf-8")
                     await ws.send(json.dumps({"audio_data": audio_b64}))
                 # Terminate gracefully as per docs
