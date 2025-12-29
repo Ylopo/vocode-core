@@ -167,6 +167,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                                 if original_encoding == AudioEncoding.MULAW:
                                     logger.debug(f"Converting μ-law to LINEAR16 (chunk {audio_chunks_sent})")
                                     data = audioop.ulaw2lin(data, 2)
+                                    data = audioop.ratecv(data, 2, 1, 8000, 16000, None)[0]
                                 else:
                                     logger.error(f"Unsupported audio encoding: {original_encoding}")
                                     continue
