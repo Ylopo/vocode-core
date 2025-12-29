@@ -141,6 +141,13 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                     await ws.send(silence_msg)
                     logger.debug("Silence threshold configuration sent")
 
+                def to_linear16_16kHz(data, encoding, sr):
+                    if encoding == AudioEncoding.MULAW or encoding == "mulaw":
+                        data = audioop.ulaw2lin(data, 2)
+                    if sr != 16000:
+                        data, _ = audioop.ratecv(data, 2, 1, sr, 16000, None)
+                    return data
+
                 async def sender():
                     """Send audio data to AssemblyAI"""
                     logger.debug("AssemblyAI sender task started")
@@ -161,16 +168,16 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                             self.total_audio_bytes_sent += len(data)
                             self.last_activity_time = time.time()
                             
-                            # Convert audio if needed
                             original_encoding = self.transcriber_config.audio_encoding
-                            if original_encoding != AudioEncoding.LINEAR16:
-                                if original_encoding == AudioEncoding.MULAW:
-                                    logger.debug(f"Converting μ-law to LINEAR16 (chunk {audio_chunks_sent})")
-                                    data = audioop.ulaw2lin(data, 2)
-                                    data = audioop.ratecv(data, 2, 1, 8000, 16000, None)[0]
-                                else:
-                                    logger.error(f"Unsupported audio encoding: {original_encoding}")
-                                    continue
+                            original_sample_rate = self.transcriber_config.sampling_rate
+
+                            # Always ensure data is LINEAR16 and 16kHz (minimal robust snippet)
+                            if original_encoding == AudioEncoding.MULAW or str(original_encoding).lower() == "mulaw":
+                                logger.debug(f"Converting μ-law to LINEAR16 (chunk {audio_chunks_sent})")
+                                data = audioop.ulaw2lin(data, 2)
+                            if original_sample_rate != 16000:
+                                logger.debug(f"Upsampling from {original_sample_rate} to 16000Hz (chunk {audio_chunks_sent})")
+                                data, _ = audioop.ratecv(data, 2, 1, original_sample_rate, 16000, None)
                             
                             # Encode and send
                             encode_start = time.time()
