@@ -17,7 +17,7 @@ from vocode.streaming.models.transcriber import (
 )
 from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
 
-ASSEMBLYAI_WS_URL =  "wss://api.assemblyai.com/v2/realtime/ws"
+ASSEMBLYAI_WS_URL =  "wss://api.assemblyai.com/v2/stream/ws"
 
 class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
     def __init__(
@@ -45,7 +45,8 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
     def get_assemblyai_url(self):
         params = {
-            "sample_rate": 16000
+            "sample_rate": 16000, 
+            "model": "universal"
         }
         if getattr(self.transcriber_config, "word_boost", None):
             params["word_boost"] = json.dumps(self.transcriber_config.word_boost)
