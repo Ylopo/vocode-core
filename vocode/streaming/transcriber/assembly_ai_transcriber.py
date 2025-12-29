@@ -17,7 +17,7 @@ from vocode.streaming.models.transcriber import (
 )
 from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
 
-ASSEMBLYAI_WS_URL = "wss://api.assemblyai.com/v2/universal/stream/ws"
+ASSEMBLYAI_WS_URL =  "wss://api.assemblyai.com/v2/realtime/ws"
 
 class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
     def __init__(
