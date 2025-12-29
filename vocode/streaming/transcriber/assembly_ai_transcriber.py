@@ -102,6 +102,12 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                         logger.warning("AssemblyAI requires LINEAR16 audio, converting from MULAW")
                         data = audioop.ulaw2lin(data, 2)  # 2 bytes/sample = 16 bits/sample
 
+                    if self.transcriber_config.sampling_rate != 16000:
+                        logger.warning(
+                            f"Upsampling audio from {self.transcriber_config.sampling_rate}Hz to 16000Hz for AssemblyAI."
+                        )
+                        data, _ = audioop.ratecv(data, 2, 1, self.transcriber_config.sampling_rate, 16000, None)
+
                     logger.debug("Encoding audio to base64")
                     audio_b64 = base64.b64encode(data).decode("utf-8")
                     payload = {"audio_data": audio_b64}
