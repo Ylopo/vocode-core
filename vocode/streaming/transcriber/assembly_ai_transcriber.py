@@ -45,7 +45,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
     def get_assemblyai_url(self):
         params = {
-            "sample_rate": self.transcriber_config.sampling_rate
+            "sample_rate": 16000
         }
         if getattr(self.transcriber_config, "word_boost", None):
             params["word_boost"] = json.dumps(self.transcriber_config.word_boost)
@@ -98,10 +98,12 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                         logger.warning("Sender timed out waiting for audio data")
                         break
 
+                    # 1. Convert mulaw to LINEAR16, if necessary
                     if self.transcriber_config.audio_encoding != AudioEncoding.LINEAR16:
                         logger.warning("AssemblyAI requires LINEAR16 audio, converting from MULAW")
-                        data = audioop.ulaw2lin(data, 2)  # 2 bytes/sample = 16 bits/sample
+                        data = audioop.ulaw2lin(data, 2)  # still at 8kHz
 
+                    # 2. Upsample to 16kHz, if necessary
                     if self.transcriber_config.sampling_rate != 16000:
                         logger.warning(
                             f"Upsampling audio from {self.transcriber_config.sampling_rate}Hz to 16000Hz for AssemblyAI."
