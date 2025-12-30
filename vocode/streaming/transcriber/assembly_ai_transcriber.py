@@ -87,32 +87,51 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
             async def sender():
                 logger.info("AssemblyAI sender coroutine started")
+                MIN_CHUNK_SIZE = 1600  # 50ms at 16kHz, 16-bit mono LINEAR16
+
+                audio_buffer = b""
                 chunk_num = 0
+
                 while not self._ended:
                     try:
                         data = await asyncio.wait_for(self._input_queue.get(), timeout=5)
-                        chunk_num += 1
                         logger.debug(
-                            f"Got audio chunk #{chunk_num}: size={len(data)}, encoding={self.transcriber_config.audio_encoding}, sample_rate={self.transcriber_config.sampling_rate}"
+                            f"Got raw input audio: size={len(data)}, encoding={self.transcriber_config.audio_encoding}, sample_rate={self.transcriber_config.sampling_rate}"
                         )
+
+                        # 1. Convert mulaw to LINEAR16, if necessary
+                        if self.transcriber_config.audio_encoding != AudioEncoding.LINEAR16:
+                            logger.warning("AssemblyAI requires LINEAR16 audio, converting from MULAW")
+                            data = audioop.ulaw2lin(data, 2)  # still at original sample rate
+
+                        # 2. Upsample to 16kHz, if necessary
+                        if self.transcriber_config.sampling_rate != 16000:
+                            logger.warning(
+                                f"Upsampling audio from {self.transcriber_config.sampling_rate}Hz to 16000Hz for AssemblyAI."
+                            )
+                            data, _ = audioop.ratecv(data, 2, 1, self.transcriber_config.sampling_rate, 16000, None)
+
+                        audio_buffer += data
+                        while len(audio_buffer) >= MIN_CHUNK_SIZE:
+                            chunk_num += 1
+                            chunk = audio_buffer[:MIN_CHUNK_SIZE]
+                            audio_buffer = audio_buffer[MIN_CHUNK_SIZE:]
+                            logger.debug(
+                                f"Sending raw audio chunk #{chunk_num} to AssemblyAI (size: {len(chunk)} bytes)"
+                            )
+                            await ws.send(chunk)
+
                     except asyncio.TimeoutError:
                         logger.warning("Sender timed out waiting for audio data")
                         break
 
-                    # 1. Convert mulaw to LINEAR16, if necessary
-                    if self.transcriber_config.audio_encoding != AudioEncoding.LINEAR16:
-                        logger.warning("AssemblyAI requires LINEAR16 audio, converting from MULAW")
-                        data = audioop.ulaw2lin(data, 2)  # still at 8kHz
-
-                    # 2. Upsample to 16kHz, if necessary
-                    if self.transcriber_config.sampling_rate != 16000:
-                        logger.warning(
-                            f"Upsampling audio from {self.transcriber_config.sampling_rate}Hz to 16000Hz for AssemblyAI."
-                        )
-                        data, _ = audioop.ratecv(data, 2, 1, self.transcriber_config.sampling_rate, 16000, None)
-
-                    logger.debug(f"Sending raw audio chunk #{chunk_num} to AssemblyAI (size: {len(data)} bytes)")
-                    await ws.send(data)
+                # Send any leftover audio at stream end
+                if audio_buffer:
+                    chunk_num += 1
+                    logger.debug(
+                        f"Sending final raw audio chunk #{chunk_num} to AssemblyAI (size: {len(audio_buffer)} bytes)"
+                    )
+                    await ws.send(audio_buffer)
 
                 logger.info("Sender done sending audio, sending terminate_session")
                 # Terminate gracefully as per docs
