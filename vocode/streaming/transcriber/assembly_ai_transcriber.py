@@ -177,5 +177,5 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                                 )
 
             logger.info("Starting AssemblyAI sender and receiver tasks")
-            await asyncio.gather(sender(), receiver())
+            await asyncio.gather(sender(ws), receiver(ws))
             logger.info("AssemblyAI sender and receiver tasks completed")
