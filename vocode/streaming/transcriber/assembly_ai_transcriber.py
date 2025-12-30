@@ -27,7 +27,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
     ):
         super().__init__(transcriber_config)
         self.api_key = (
-            "c02db566717b478db6117f7bec4c02d0"
+            "571d6c90beeb4ecf97bd6b288dc31764"
             or getattr(transcriber_config, 'api_key', None)
             or getenv("ASSEMBLY_AI_API_KEY")
         )
