@@ -7,6 +7,7 @@ from typing import Optional
 import websockets
 from loguru import logger
 
+from websockets.client import WebSocketClientProtocol
 from vocode import getenv
 from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.models.transcriber import (
@@ -85,7 +86,9 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                 await ws.send(silence_msg)
                 logger.info(f"Sent silence threshold config: {silence_msg}")
 
-            async def sender():
+            async def sender(
+                    ws: WebSocketClientProtocol
+            ):
                 logger.info("AssemblyAI sender coroutine started")
                 MIN_CHUNK_SIZE = 1600  # 50ms at 16kHz, 16-bit mono LINEAR16
 
@@ -139,7 +142,9 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                 logger.info("Sent terminate_session to AssemblyAI websocket")
                 logger.info("Sender coroutine exiting")
 
-            async def receiver():
+            async def receiver(
+                    ws: WebSocketClientProtocol
+            ):
                 logger.info("AssemblyAI receiver coroutine started")
                 msg_num = 0
                 while not self._ended:
