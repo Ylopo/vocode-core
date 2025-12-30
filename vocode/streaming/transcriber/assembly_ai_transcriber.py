@@ -111,11 +111,8 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                         )
                         data, _ = audioop.ratecv(data, 2, 1, self.transcriber_config.sampling_rate, 16000, None)
 
-                    logger.debug("Encoding audio to base64")
-                    audio_b64 = base64.b64encode(data).decode("utf-8")
-                    payload = {"audio_data": audio_b64}
-                    logger.debug(f"Sending audio chunk #{chunk_num} to AssemblyAI (size: {len(audio_b64)} base64 chars)")
-                    await ws.send(json.dumps(payload))
+                    logger.debug(f"Sending raw audio chunk #{chunk_num} to AssemblyAI (size: {len(data)} bytes)")
+                    await ws.send(data)
 
                 logger.info("Sender done sending audio, sending terminate_session")
                 # Terminate gracefully as per docs
