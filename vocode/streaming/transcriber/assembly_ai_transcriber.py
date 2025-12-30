@@ -34,6 +34,11 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
         if not self.api_key:
             raise Exception("Please set ASSEMBLY_AI_API_KEY environment variable or pass it as a parameter")
         self._ended = False
+        if self.transcriber_config.sampling_rate != 16000:
+            logger.warning(
+                f"Sample rate was {self.transcriber_config.sampling_rate}, overriding to 16000 for AssemblyAI compatibility."
+            )
+            self.transcriber_config.sampling_rate = 16000
 
     async def ready(self):
         return True
@@ -45,7 +50,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
     def get_assemblyai_url(self):
         params = {
-            "sample_rate": 16000, 
+            "sample_rate": self.transcriber_config.sampling_rate, 
             "model": "universal"
         }
         if getattr(self.transcriber_config, "word_boost", None):
