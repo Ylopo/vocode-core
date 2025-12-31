@@ -125,7 +125,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
                     try:
                         logger.info(f"Sender sending {len(data)} bytes ({len(data)//2/self.transcriber_config.sampling_rate:.3f} sec) to AssemblyAI")
-                        await ws.send(json.dumps(data))
+                        await ws.send(bytes(data))
                         logger.info(f"Sender sent {len(data)} bytes successfully")
                     except Exception as e:
                         logger.error(f"Sender failed to send chunk: {e}")
