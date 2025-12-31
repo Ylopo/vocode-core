@@ -134,7 +134,12 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                     logger.debug(
                         f"Sending final raw audio chunk #{chunk_num} to AssemblyAI (size: {len(audio_buffer)} bytes)"
                     )
-                    await ws.send(audio_buffer)
+                    try:
+                        await ws.send(audio_buffer)
+                        logger.info(f"Chunk #{chunk_num} sent successfully (size: {len(audio_buffer)})")
+                        total_bytes_sent += len(chunk)
+                    except Exception as e:
+                        logger.error(f"Failed to send chunk #{chunk_num}: {e}")
 
                 logger.info("Sender done sending audio, sending terminate_session")
                 # Terminate gracefully as per docs
