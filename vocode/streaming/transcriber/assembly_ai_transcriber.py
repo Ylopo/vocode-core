@@ -180,6 +180,8 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                                         is_final=(data["message_type"] == "FinalTranscript"),
                                     )
                                 )
+                    else:
+                        logger.warning(f"Unknown AssemblyAI response: {data}")
 
             logger.info("Starting AssemblyAI sender and receiver tasks")
             await asyncio.gather(sender(ws), receiver(ws))
