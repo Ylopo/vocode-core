@@ -91,13 +91,14 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
     async def process(self):
         self.audio_cursor = 0
         URL = self.get_assembly_ai_url()
-
+        logger.info(f"Connecting to AssemblyAI at {URL}")
         async with websockets.connect(
             URL,
             extra_headers=(("Authorization", self.api_key),),
             ping_interval=5,
             ping_timeout=20,
         ) as ws:
+            logger.info("Connected to AssemblyAI")
             await asyncio.sleep(0.1)
 
             if self.end_utterance_silence_threshold_msg:
@@ -124,7 +125,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
                     try:
                         logger.info(f"Sender sending {len(data)} bytes ({len(data)//2/self.transcriber_config.sampling_rate:.3f} sec) to AssemblyAI")
-                        await ws.send(json.dumps({"audio_data": AudioMessage.from_bytes(data).data}))
+                        await ws.send(json.dumps(data))
                         logger.info(f"Sender sent {len(data)} bytes successfully")
                     except Exception as e:
                         logger.error(f"Sender failed to send chunk: {e}")
