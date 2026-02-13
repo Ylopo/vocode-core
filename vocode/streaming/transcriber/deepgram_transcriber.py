@@ -490,6 +490,7 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
                                     message=buffer,
                                     confidence=buffer_avg_confidence,
                                     is_final=True,
+                                    speech_final=(deepgram_response.speech_final if isinstance(deepgram_response, DeepgramTranscriptionResult) else False),
                                     duration_seconds=self.calculate_duration(words_buffer),
                                 )
                             )
@@ -518,6 +519,7 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
                                         message=interim_message,
                                         confidence=deepgram_response.top_choice.confidence,
                                         is_final=False,
+                                        speech_final=deepgram_response.speech_final,
                                     )
                                 )
                                 time_silent = self.calculate_time_silent(deepgram_response)

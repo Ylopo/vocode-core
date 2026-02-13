@@ -165,6 +165,7 @@ class Transcription(BaseModel):
     message: str
     confidence: float
     is_final: bool
+    speech_final: bool = False  # whether the end of the speech segment has been reached
     is_interrupt: bool = False
     bot_was_in_medias_res: bool = False
     duration_seconds: Optional[float] = None  # gets added only on final transcription
@@ -174,6 +175,7 @@ class Transcription(BaseModel):
             f"Transcription(message={self.message}, "
             + f"confidence={self.confidence}, "
             + f"is_final={self.is_final}, "
+            + f"speech_final={self.speech_final},"
             + f"is_interrupt={self.is_interrupt}, "
             + f"bot_was_in_medias_res={self.bot_was_in_medias_res}, "
             + f"duration_seconds={self.duration_seconds}, "

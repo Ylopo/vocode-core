@@ -167,11 +167,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             if self.has_associated_unignored_utterance:
                 return False
             bot_still_speaking = self.is_bot_still_speaking()
-            if self.has_associated_ignored_utterance or bot_still_speaking:
-                logger.info(
-                    f"Associated ignored utterance: {self.has_associated_ignored_utterance}. Bot still speaking: {bot_still_speaking}"
-                )
+
+            if bot_still_speaking:
+                logger.info(f"Bot still speaking: {bot_still_speaking}. Checking for backchannel.")
                 return self.is_transcription_backchannel(transcription)
+            
             return False
 
         def is_transcription_backchannel(self, transcription: Transcription):
@@ -184,6 +184,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 return False
 
             if num_words <= LOW_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD:
+                logger.info(
+                    f"Low interrupt sensitivity; {num_words} word(s) is a backchannel candidate")
                 return True
             cleaned = re.sub("[^\w\s]", "", transcription.message).strip().lower()
             return any(re.fullmatch(regex, cleaned) for regex in BACKCHANNEL_PATTERNS)
@@ -240,6 +242,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 self.has_associated_ignored_utterance = (
                     not transcription.is_final  # if it's final, we're done with this backchannel
                 )
+                logger.info(
+                    f"has_associated_ignored_utterance set to {self.has_associated_ignored_utterance}"
+                )
+                if transcription.speech_final:
+                    logger.info("Speech final received for ignored utterance, flushing backchannel buffer")
                 if transcription.is_final:
                     # for all ignored backchannels, store them to be added to the transcript later
                     self.human_backchannels_buffer.append(transcription)
