@@ -57,6 +57,7 @@ class ActionType(str, Enum):
     WAIT = "action_wait"
     RECORD_EMAIL = "action_record_email"
     END_CONVERSATION = "action_end_conversation"
+    END_CONVERSATION_VOICEMAIL = "action_end_conversation_voicemail"
     EXECUTE_EXTERNAL_ACTION = "action_external"
 
     TRANSFER_CALL = "action_transfer_call"

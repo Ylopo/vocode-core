@@ -4,6 +4,7 @@ from vocode.streaming.action.abstract_factory import AbstractActionFactory
 from vocode.streaming.action.base_action import BaseAction
 from vocode.streaming.action.dtmf import TwilioDTMF, VonageDTMF
 from vocode.streaming.action.end_conversation import EndConversation
+from vocode.streaming.action.end_conversation_voicemail import EndConversationVoicemail
 from vocode.streaming.action.execute_external_action import ExecuteExternalAction
 from vocode.streaming.action.phone_call_action import (
     TwilioPhoneConversationAction,
@@ -16,6 +17,7 @@ from vocode.streaming.models.actions import ActionConfig, ActionType
 
 CONVERSATION_ACTIONS: Dict[ActionType, Type[BaseAction]] = {
     ActionType.END_CONVERSATION: EndConversation,
+    ActionType.END_CONVERSATION_VOICEMAIL: EndConversationVoicemail,
     ActionType.RECORD_EMAIL: RecordEmail,
     ActionType.WAIT: Wait,
     ActionType.EXECUTE_EXTERNAL_ACTION: ExecuteExternalAction,
