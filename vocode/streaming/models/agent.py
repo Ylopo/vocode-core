@@ -38,6 +38,7 @@ GROQ_MIXTRAL_8X7B_MODEL_NAME = "mixtral-8x7b-32768"
 GROQ_GEMMA_7B_MODEL_NAME = "gemma-7b-it"
 
 InterruptSensitivity = Literal["low", "high"]
+OnNoHumanAnswer = Literal["continue", "hangup"]
 
 
 class AgentType(str, Enum):
@@ -107,6 +108,7 @@ class AgentConfig(TypedModel, type=AgentType.BASE.value):  # type: ignore
     goodbye_phrases: Optional[List[str]] = None
     interrupt_sensitivity: InterruptSensitivity = "low"
     cut_off_response: Optional[CutOffResponse] = None
+    on_no_human_answer: OnNoHumanAnswer = "hangup"
 
 
 class LLMAgentConfig(AgentConfig, type=AgentType.LLM.value):  # type: ignore
