@@ -28,7 +28,9 @@ class EndConversationVoicemailVocodeActionConfig(
 ):
     def action_attempt_to_string(self, input: ActionInput) -> str:
         assert isinstance(input.params, EndConversationVoicemailParameters)
-        return "Attempting to end conversation on voicemail detection"
+        action_description = "Attempting to end conversation on voicemail detection"
+        logger.info(action_description)
+        return action_description
 
     def action_result_to_string(self, input: ActionInput, output: ActionOutput) -> str:
         assert isinstance(output.response, EndConversationVoicemailResponse)
@@ -36,6 +38,7 @@ class EndConversationVoicemailVocodeActionConfig(
             action_description = "Successfully ended conversation on voicemail detection"
         else:
             action_description = "Did not end call because user interrupted on voicemail detection"
+        logger.info(action_description)
         return action_description
 
 
