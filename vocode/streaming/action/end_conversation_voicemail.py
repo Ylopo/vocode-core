@@ -21,6 +21,8 @@ class EndConversationVoicemailParameters(BaseModel):
 
 class EndConversationVoicemailResponse(BaseModel):
     success: bool
+    was_interrupted: bool = False
+    error: str | None = None
 
 
 class EndConversationVoicemailVocodeActionConfig(
@@ -35,10 +37,14 @@ class EndConversationVoicemailVocodeActionConfig(
     def action_result_to_string(self, input: ActionInput, output: ActionOutput) -> str:
         assert isinstance(output.response, EndConversationVoicemailResponse)
         if output.response.success:
-            action_description = "Successfully ended conversation on voicemail detection"
+            if output.response.was_interrupted:
+                action_description = "Successfully ended conversation on voicemail detection (interruption ignored)"
+            else:
+                action_description = "Successfully ended conversation on voicemail detection"
+            logger.info(action_description)
         else:
-            action_description = "Did not end call because user interrupted on voicemail detection"
-        logger.info(action_description)
+            action_description = "Failed to end conversation on voicemail detection"
+            logger.error(f"{action_description}. Error: {output.response.error}")
         return action_description
 
 
@@ -60,7 +66,7 @@ class EndConversationVoicemail(
         super().__init__(
             action_config,
             quiet=True,
-            should_respond="sometimes",
+            should_respond="never",
             is_interruptible=False,
         )
 
@@ -75,17 +81,28 @@ class EndConversationVoicemail(
         if action_input.user_message_tracker is not None:
             await action_input.user_message_tracker.wait()
 
-        if self.conversation_state_manager.transcript.was_last_message_interrupted():
-            logger.info("Last bot message was interrupted")
-            return ActionOutput(
-                action_type=action_input.action_config.type,
-                response=EndConversationVoicemailResponse(success=False),
+        was_interrupted = self.conversation_state_manager.transcript.was_last_message_interrupted()
+
+        if was_interrupted:
+            logger.info(
+                "Last bot message was interrupted, but proceeding to end conversation on voicemail detection"
             )
 
-        await self.conversation_state_manager.terminate_conversation()
+        try:
+            await self.conversation_state_manager.terminate_conversation()
+            await self._end_of_run_hook()
+            return ActionOutput(
+                action_type=action_input.action_config.type,
+                response=EndConversationVoicemailResponse(
+                    success=True, was_interrupted=was_interrupted
+                ),
+            )
 
-        await self._end_of_run_hook()
-        return ActionOutput(
-            action_type=action_input.action_config.type,
-            response=EndConversationVoicemailResponse(success=True),
-        )
+        except Exception as e:
+            logger.exception("Failed to end conversation on voicemail detection")
+            return ActionOutput(
+                action_type=action_input.action_config.type,
+                response=EndConversationVoicemailResponse(
+                    success=False, was_interrupted=was_interrupted, error=repr(e)
+                ),
+            )
