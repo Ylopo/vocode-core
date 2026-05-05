@@ -63,9 +63,11 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         is_sole_text_chunk: bool = False,
     ) -> SynthesisResult:
         self.total_chars += len(message.text)
+        use_pcm = self.model_id in ("mistv3", "coda")
         headers = {
             "Authorization": self.api_key,
             "Content-Type": "application/json",
+            **({"Accept": "audio/pcm"} if use_pcm else {}),
         }
 
         body = self.get_request_body(message.text)
@@ -78,10 +80,13 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         ) as response:
             if not response.ok:
                 raise RimeError(f"Rime API error: {response.status}, {await response.text()}")
-            data = json.loads(await response.text())
 
-            audio_content = data.get("audioContent")
-            output_bytes = base64.b64decode(audio_content)[WAV_HEADER_LENGTH:]
+            if use_pcm:
+                output_bytes = await response.read()
+            else:
+                data = json.loads(await response.text())
+                audio_content = data.get("audioContent")
+                output_bytes = base64.b64decode(audio_content)[WAV_HEADER_LENGTH:]
 
             if self.synthesizer_config.audio_encoding == AudioEncoding.MULAW:
                 output_bytes = audioop.lin2ulaw(output_bytes, 2)
