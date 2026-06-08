@@ -105,7 +105,6 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
 
         parameters: Dict[str, Any] = {
             "messages": messages,
-            "max_tokens": self.agent_config.max_tokens,
             "temperature": self.agent_config.temperature,
         }
 
@@ -280,7 +279,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         ttft_span = sentry_create_span(
             sentry_callable=sentry_sdk.start_span, op=CustomSentrySpans.TIME_TO_FIRST_TOKEN
         )
-        
+
         logger.info(f"Human input: {human_input!r}")
         logger.info(f"Chat parameters: {chat_parameters!r}")
 
