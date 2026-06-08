@@ -123,6 +123,18 @@ class LLMFallback(BaseModel):
     model_name: str
 
 
+class ReasoningEffortConfig(BaseModel):
+    reasoning: bool = True
+    effort_level: Optional[Literal["low", "medium", "high"]] = "medium"
+
+    @validator("effort_level", always=True)
+    @classmethod
+    def clear_effort_if_not_reasoning(cls, v, values):
+        if not values.get("reasoning", True):
+            return None
+        return v
+    
+
 class ChatGPTAgentConfig(AgentConfig, type=AgentType.CHAT_GPT.value):  # type: ignore
     openai_api_key: Optional[str] = None
     prompt_preamble: str
@@ -137,7 +149,7 @@ class ChatGPTAgentConfig(AgentConfig, type=AgentType.CHAT_GPT.value):  # type: i
     backchannel_probability: float = 0.7
     first_response_filler_message: Optional[str] = None
     llm_fallback: Optional[LLMFallback] = None
-
+    reasoning_effort: Optional[ReasoningEffortConfig] = None
 
 class AnthropicAgentConfig(AgentConfig, type=AgentType.ANTHROPIC.value):  # type: ignore
     prompt_preamble: str

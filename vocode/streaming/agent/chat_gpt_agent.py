@@ -83,9 +83,18 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             if isinstance(action_config.action_trigger, FunctionCallActionTrigger)
         ]
 
+    def get_tools(self):
+        functions = self.get_functions()
+        if not functions:
+            return None
+        return [{"type": "function", "function": f} for f in functions]
+    
     def get_chat_parameters(self, messages: Optional[List] = None, use_functions: bool = True):
         assert self.transcript is not None
         is_azure = self._is_azure_model()
+        model_name = self.agent_config.model_name
+        use_max_completion_tokens = model_name.startswith("gpt-5")
+        use_tools_format = use_max_completion_tokens
 
         messages = messages or format_openai_chat_messages_from_transcript(
             self.transcript,
@@ -100,6 +109,11 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             "temperature": self.agent_config.temperature,
         }
 
+        if use_max_completion_tokens:
+            parameters["max_completion_tokens"] = self.agent_config.max_tokens
+        else:
+            parameters["max_tokens"] = self.agent_config.max_tokens
+
         if is_azure:
             assert self.agent_config.azure_params is not None
             parameters["model"] = self.agent_config.azure_params.deployment_name
@@ -107,7 +121,17 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             parameters["model"] = self.agent_config.model_name
 
         if use_functions and self.functions:
-            parameters["functions"] = self.functions
+            if use_tools_format:
+                    parameters["tools"] = self.get_tools()
+            else:
+                parameters["functions"] = self.functions
+
+        if use_tools_format:
+            re_cfg = self.agent_config.reasoning_effort
+            if re_cfg is None or not re_cfg.reasoning:
+                parameters["reasoning_effort"] = "none"
+            else:
+                parameters["reasoning_effort"] = re_cfg.effort_level or "medium"  
 
         return parameters
 
@@ -256,6 +280,9 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         ttft_span = sentry_create_span(
             sentry_callable=sentry_sdk.start_span, op=CustomSentrySpans.TIME_TO_FIRST_TOKEN
         )
+        
+        logger.info(f"Human input: {human_input!r}")
+        logger.info(f"Chat parameters: {chat_parameters!r}")
 
         stream = await self._create_openai_stream(chat_parameters)
 
