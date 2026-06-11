@@ -13,7 +13,9 @@ from vocode.streaming.action.default_factory import DefaultActionFactory
 from vocode.streaming.agent.base_agent import GeneratedResponse, RespondAgent, StreamedResponse
 from vocode.streaming.agent.openai_utils import (
     format_openai_chat_messages_from_transcript,
+    format_openai_responses_input_from_transcript,
     openai_get_tokens,
+    responses_get_tokens,
     vector_db_result_to_openai_chat_message,
 )
 from vocode.streaming.agent.streaming_utils import collate_response_async, stream_response_async
@@ -137,6 +139,41 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
     def _is_azure_model(self) -> bool:
         return self.agent_config.azure_params is not None
 
+    def _use_responses_api(self) -> bool:
+        if self._is_azure_model():
+            return False
+        return self.agent_config.openai_endpoint == "responses"
+
+    def get_responses_parameters(self, messages: Optional[List] = None, use_functions: bool = True):
+        assert self.transcript is not None
+
+        chat_messages = messages or format_openai_chat_messages_from_transcript(
+            self.transcript,
+            self.get_model_name_for_tokenizer(),
+            self.functions,
+            self.agent_config.prompt_preamble,
+        )
+
+        instructions, input_messages = format_openai_responses_input_from_transcript(chat_messages)
+
+        parameters: Dict[str, Any] = {
+            "model": self.agent_config.model_name,
+            "input": input_messages,
+            "max_output_tokens": self.agent_config.max_tokens,
+            "temperature": self.agent_config.temperature,
+        }
+
+        if instructions:
+            parameters["instructions"] = instructions
+
+        if use_functions and self.functions:
+            parameters["tools"] = self.get_tools()
+
+        return parameters
+
+    async def _create_responses_stream(self, responses_parameters: Dict[str, Any]) -> AsyncGenerator:
+        return await self.openai_client.responses.create(**responses_parameters)
+
     def get_model_name_for_tokenizer(self):
         if not self.agent_config.azure_params:
             return self.agent_config.model_name
@@ -211,7 +248,10 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
     ) -> AsyncGenerator[GeneratedResponse, None]:
         assert self.transcript is not None
 
-        chat_parameters = {}
+        use_responses = self._use_responses_api()
+
+        # Build the message list (shared between both paths; vector DB injects here)
+        injected_messages = None
         if self.agent_config.vector_db_config:
             try:
                 docs_with_scores = await self.vector_db.similarity_search_with_score(
@@ -229,22 +269,29 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
                 vector_db_result = (
                     f"Found {len(docs_with_scores)} similar documents:\n{docs_with_scores_str}"
                 )
-                messages = format_openai_chat_messages_from_transcript(
+                injected_messages = format_openai_chat_messages_from_transcript(
                     self.transcript,
                     self.agent_config.model_name,
                     self.functions,
                     self.agent_config.prompt_preamble,
                 )
-                messages.insert(-1, vector_db_result_to_openai_chat_message(vector_db_result))
-                chat_parameters = self.get_chat_parameters(messages)
+                injected_messages.insert(
+                    -1, vector_db_result_to_openai_chat_message(vector_db_result)
+                )
             except Exception as e:
                 logger.error(f"Error while hitting vector db: {e}", exc_info=True)
-                chat_parameters = self.get_chat_parameters()
+
+        if use_responses:
+            chat_parameters = self.get_responses_parameters(injected_messages)
+            msg_key = "input"
         else:
-            chat_parameters = self.get_chat_parameters()
+            chat_parameters = self.get_chat_parameters(injected_messages)
+            msg_key = "messages"
+
         chat_parameters["stream"] = True
 
-        openai_chat_messages: List = chat_parameters.get("messages", [])
+        # Reference to the live message list so backchannel injection propagates into the API call
+        openai_chat_messages: List = chat_parameters.get(msg_key, [])
 
         backchannelled = "false"
         backchannel: Optional[BotBackchannel] = None
@@ -283,7 +330,12 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         logger.info(f"Human input: {human_input!r}")
         logger.info(f"Chat parameters: {chat_parameters!r}")
 
-        stream = await self._create_openai_stream(chat_parameters)
+        if use_responses:
+            stream = await self._create_responses_stream(chat_parameters)
+            token_gen = responses_get_tokens(stream)
+        else:
+            stream = await self._create_openai_stream(chat_parameters)
+            token_gen = openai_get_tokens(stream)
 
         response_generator = collate_response_async
         using_input_streaming_synthesizer = (
@@ -293,9 +345,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             response_generator = stream_response_async
         async for message in response_generator(
             conversation_id=conversation_id,
-            gen=openai_get_tokens(
-                stream,
-            ),
+            gen=token_gen,
             get_functions=True,
             sentry_span=ttft_span,
         ):

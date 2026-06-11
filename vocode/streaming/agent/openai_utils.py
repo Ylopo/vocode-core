@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 from loguru import logger
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
@@ -226,3 +226,113 @@ async def openai_get_tokens(
                         arguments=(tool_call.function.arguments or ""),
                     )
                     break
+
+
+def format_openai_responses_input_from_transcript(
+    chat_messages: List[Dict],
+) -> Tuple[Optional[str], List[Dict]]:
+    """
+    Convert a chat-completions message list into the (instructions, input) pair
+    expected by the OpenAI Responses API.
+
+    - System messages become the `instructions` string.
+    - Assistant tool_calls / function_call entries are converted to the
+      Responses API function_call content format.
+    - tool / function result entries are converted to function_call_output items.
+    """
+    instructions: Optional[str] = None
+    input_messages: List[Dict] = []
+
+    for msg in chat_messages:
+        role = msg.get("role")
+
+        if role == "system":
+            instructions = msg.get("content", "")
+            continue
+
+        if role in ("user", "assistant"):
+            tool_calls = msg.get("tool_calls")
+            function_call = msg.get("function_call")
+
+            if tool_calls:
+                content: List[Dict] = []
+                if msg.get("content"):
+                    content.append({"type": "output_text", "text": msg["content"]})
+                for tc in tool_calls:
+                    content.append(
+                        {
+                            "type": "function_call",
+                            "id": tc["id"],
+                            "call_id": tc["id"],
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"],
+                        }
+                    )
+                input_messages.append({"role": "assistant", "content": content})
+            elif function_call:
+                call_id = f"call_{function_call['name']}"
+                input_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "function_call",
+                                "id": call_id,
+                                "call_id": call_id,
+                                "name": function_call["name"],
+                                "arguments": function_call["arguments"],
+                            }
+                        ],
+                    }
+                )
+            else:
+                input_messages.append({"role": role, "content": msg.get("content", "")})
+
+        elif role == "tool":
+            input_messages.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": msg["tool_call_id"],
+                    "output": msg.get("content", ""),
+                }
+            )
+
+        elif role == "function":
+            input_messages.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": f"call_{msg['name']}",
+                    "output": msg.get("content", ""),
+                }
+            )
+
+    return instructions, input_messages
+
+
+async def responses_get_tokens(
+    gen: AsyncGenerator,
+) -> AsyncGenerator[Union[str, FunctionFragment], None]:
+    """Extract text tokens and function-call fragments from a Responses API stream."""
+    current_function_name = ""
+    async for event in gen:
+        event_type = getattr(event, "type", None)
+
+        if event_type == "response.output_item.added":
+            item = getattr(event, "item", None)
+            if item and getattr(item, "type", None) == "function_call":
+                current_function_name = getattr(item, "name", "") or ""
+
+        elif event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                yield delta
+
+        elif event_type == "response.function_call_arguments.delta":
+            yield FunctionFragment(
+                name=current_function_name,
+                arguments=getattr(event, "delta", "") or "",
+            )
+            current_function_name = ""  # name only travels with the first fragment
+
+        elif event_type == "response.done":
+            break

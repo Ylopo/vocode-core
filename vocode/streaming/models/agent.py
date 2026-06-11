@@ -150,6 +150,7 @@ class ChatGPTAgentConfig(AgentConfig, type=AgentType.CHAT_GPT.value):  # type: i
     first_response_filler_message: Optional[str] = None
     llm_fallback: Optional[LLMFallback] = None
     reasoning_effort: Optional[ReasoningEffortConfig] = None
+    openai_endpoint: Optional[Literal["completions", "responses"]] = "responses"
 
 class AnthropicAgentConfig(AgentConfig, type=AgentType.ANTHROPIC.value):  # type: ignore
     prompt_preamble: str
