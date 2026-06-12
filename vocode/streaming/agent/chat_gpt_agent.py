@@ -90,6 +90,13 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         if not functions:
             return None
         return [{"type": "function", "function": f} for f in functions]
+
+    def get_responses_tools(self):
+        """Tools in the Responses API format: name/description/parameters are top-level, not nested under 'function'."""
+        functions = self.get_functions()
+        if not functions:
+            return None
+        return [{"type": "function", **f} for f in functions]
     
     def get_chat_parameters(self, messages: Optional[List] = None, use_functions: bool = True):
         assert self.transcript is not None
@@ -167,7 +174,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             parameters["instructions"] = instructions
 
         if use_functions and self.functions:
-            parameters["tools"] = self.get_tools()
+            parameters["tools"] = self.get_responses_tools()
 
         return parameters
 
