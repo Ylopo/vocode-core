@@ -255,11 +255,12 @@ def format_openai_responses_input_from_transcript(
             function_call = msg.get("function_call")
 
             if tool_calls:
-                content: List[Dict] = []
+                # Any text content comes first as a plain assistant message
                 if msg.get("content"):
-                    content.append({"type": "output_text", "text": msg["content"]})
+                    input_messages.append({"role": "assistant", "content": msg["content"]})
+                # Each function call is a top-level item — NOT wrapped in a role/content array
                 for tc in tool_calls:
-                    content.append(
+                    input_messages.append(
                         {
                             "type": "function_call",
                             "id": tc["id"],
@@ -268,21 +269,17 @@ def format_openai_responses_input_from_transcript(
                             "arguments": tc["function"]["arguments"],
                         }
                     )
-                input_messages.append({"role": "assistant", "content": content})
             elif function_call:
                 call_id = f"call_{function_call['name']}"
+                if msg.get("content"):
+                    input_messages.append({"role": "assistant", "content": msg["content"]})
                 input_messages.append(
                     {
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "function_call",
-                                "id": call_id,
-                                "call_id": call_id,
-                                "name": function_call["name"],
-                                "arguments": function_call["arguments"],
-                            }
-                        ],
+                        "type": "function_call",
+                        "id": call_id,
+                        "call_id": call_id,
+                        "name": function_call["name"],
+                        "arguments": function_call["arguments"],
                     }
                 )
             else:
