@@ -228,6 +228,15 @@ async def openai_get_tokens(
                     break
 
 
+def _to_fc_id(call_id: str) -> str:
+    """Responses API requires function call IDs to start with 'fc_', not 'call_'."""
+    if call_id.startswith("call_"):
+        return "fc_" + call_id[5:]
+    if not call_id.startswith("fc_"):
+        return "fc_" + call_id
+    return call_id
+
+
 def format_openai_responses_input_from_transcript(
     chat_messages: List[Dict],
 ) -> Tuple[Optional[str], List[Dict]]:
@@ -236,9 +245,9 @@ def format_openai_responses_input_from_transcript(
     expected by the OpenAI Responses API.
 
     - System messages become the `instructions` string.
-    - Assistant tool_calls / function_call entries are converted to the
-      Responses API function_call content format.
-    - tool / function result entries are converted to function_call_output items.
+    - Assistant tool_calls / function_call entries become top-level function_call items.
+    - tool / function result entries become top-level function_call_output items.
+    - IDs are normalised from the 'call_' prefix to the 'fc_' prefix required by the Responses API.
     """
     instructions: Optional[str] = None
     input_messages: List[Dict] = []
@@ -260,24 +269,25 @@ def format_openai_responses_input_from_transcript(
                     input_messages.append({"role": "assistant", "content": msg["content"]})
                 # Each function call is a top-level item — NOT wrapped in a role/content array
                 for tc in tool_calls:
+                    fc_id = _to_fc_id(tc["id"])
                     input_messages.append(
                         {
                             "type": "function_call",
-                            "id": tc["id"],
-                            "call_id": tc["id"],
+                            "id": fc_id,
+                            "call_id": fc_id,
                             "name": tc["function"]["name"],
                             "arguments": tc["function"]["arguments"],
                         }
                     )
             elif function_call:
-                call_id = f"call_{function_call['name']}"
+                fc_id = _to_fc_id(f"call_{function_call['name']}")
                 if msg.get("content"):
                     input_messages.append({"role": "assistant", "content": msg["content"]})
                 input_messages.append(
                     {
                         "type": "function_call",
-                        "id": call_id,
-                        "call_id": call_id,
+                        "id": fc_id,
+                        "call_id": fc_id,
                         "name": function_call["name"],
                         "arguments": function_call["arguments"],
                     }
@@ -289,7 +299,7 @@ def format_openai_responses_input_from_transcript(
             input_messages.append(
                 {
                     "type": "function_call_output",
-                    "call_id": msg["tool_call_id"],
+                    "call_id": _to_fc_id(msg["tool_call_id"]),
                     "output": msg.get("content", ""),
                 }
             )
@@ -298,7 +308,7 @@ def format_openai_responses_input_from_transcript(
             input_messages.append(
                 {
                     "type": "function_call_output",
-                    "call_id": f"call_{msg['name']}",
+                    "call_id": _to_fc_id(f"call_{msg['name']}"),
                     "output": msg.get("content", ""),
                 }
             )
