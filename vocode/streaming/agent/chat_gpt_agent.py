@@ -163,12 +163,27 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
 
         instructions, input_messages = format_openai_responses_input_from_transcript(chat_messages)
 
+        model_name = self.agent_config.model_name
+        is_reasoning_model = model_name.startswith("gpt-5")
+
         parameters: Dict[str, Any] = {
-            "model": self.agent_config.model_name,
+            "model": model_name,
             "input": input_messages,
             "max_output_tokens": self.agent_config.max_tokens,
-            "temperature": self.agent_config.temperature,
         }
+
+        if is_reasoning_model:
+            # The Responses API expects reasoning effort nested under `reasoning`
+            # (e.g. {"effort": "low"}), NOT a top-level `reasoning_effort` string as in
+            # Chat Completions. gpt-5 reasoning models also reject a non-default
+            # temperature, so temperature is omitted for these models.
+            re_cfg = self.agent_config.reasoning_effort
+            if re_cfg is None or not re_cfg.reasoning:
+                parameters["reasoning"] = {"effort": "minimal"}
+            else:
+                parameters["reasoning"] = {"effort": re_cfg.effort_level or "medium"}
+        else:
+            parameters["temperature"] = self.agent_config.temperature
 
         if instructions:
             parameters["instructions"] = instructions
