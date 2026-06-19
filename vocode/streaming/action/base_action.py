@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, T
 
 import jsonschema
 from jsonschema import Draft202012Validator as SchemaValidator
+from loguru import logger
 
 from vocode.streaming.action.action_utils import exclude_keys_recursive
 from vocode.streaming.models.actions import (
@@ -34,6 +35,13 @@ class BaseAction(Generic[ActionConfigType, ParametersType, ResponseType]):  # ty
         self.should_respond = should_respond
         self.quiet = quiet
         self.is_interruptible = is_interruptible
+        logger.info(
+            "Action config | type={} should_respond={} quiet={} is_interruptible={}",
+            getattr(action_config, "type", type(self).__name__),
+            self.should_respond,
+            self.quiet,
+            self.is_interruptible,
+        )
 
     def attach_conversation_state_manager(
         self, conversation_state_manager: "AbstractConversationStateManager"
