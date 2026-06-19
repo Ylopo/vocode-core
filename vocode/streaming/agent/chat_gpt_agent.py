@@ -29,6 +29,18 @@ from vocode.utils.sentry_utils import CustomSentrySpans, sentry_create_span
 
 ChatGPTAgentConfigType = TypeVar("ChatGPTAgentConfigType", bound=ChatGPTAgentConfig)
 
+# On the Responses API, reasoning tokens are billed against `max_output_tokens`, so a
+# fixed cap that fits the spoken reply gets starved by reasoning and the response
+# truncates with no visible text. We reserve headroom for reasoning ON TOP of the
+# speech budget (agent_config.max_tokens), sized per effort from observed usage.
+REASONING_TOKEN_RESERVE: Dict[str, int] = {
+    "none": 0,
+    "low": 256,
+    "medium": 1024,
+    "high": 2048,
+    "xhigh": 4096,
+}
+
 
 def instantiate_openai_client(agent_config: ChatGPTAgentConfig, model_fallback: bool = False):
     if agent_config.azure_params:
@@ -169,20 +181,28 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         parameters: Dict[str, Any] = {
             "model": model_name,
             "input": input_messages,
-            "max_output_tokens": self.agent_config.max_tokens,
         }
 
         if is_reasoning_model:
             # The Responses API expects reasoning effort nested under `reasoning`
             # (e.g. {"effort": "low"}), NOT a top-level `reasoning_effort` string as in
-            # Chat Completions. gpt-5 reasoning models also reject a non-default
-            # temperature, so temperature is omitted for these models.
+            # Chat Completions. The "off" value for gpt-5 is "none" (these models reject
+            # "minimal"). gpt-5 reasoning models also reject a non-default temperature,
+            # so temperature is omitted for them.
             re_cfg = self.agent_config.reasoning_effort
             if re_cfg is None or not re_cfg.reasoning:
-                parameters["reasoning"] = {"effort": "minimal"}
+                effort = "none"
             else:
-                parameters["reasoning"] = {"effort": re_cfg.effort_level or "medium"}
+                effort = re_cfg.effort_level or "medium"
+
+            parameters["reasoning"] = {"effort": effort}
+            # Give reasoning its own budget on top of the speech budget so it can never
+            # starve the visible reply (see REASONING_TOKEN_RESERVE).
+            parameters["max_output_tokens"] = (
+                self.agent_config.max_tokens + REASONING_TOKEN_RESERVE.get(effort, 0)
+            )
         else:
+            parameters["max_output_tokens"] = self.agent_config.max_tokens
             parameters["temperature"] = self.agent_config.temperature
 
         if instructions:
