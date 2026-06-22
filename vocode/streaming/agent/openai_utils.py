@@ -21,14 +21,6 @@ from vocode.streaming.models.transcript import (
     Transcript,
 )
 
-def is_tools_format_model(model_name: str) -> bool:
-    """
-    Returns True for models that require the tools/tool format (gpt-5+).
-    Returns False for models that use the legacy functions/function_call format (gpt-4 and below).
-    """
-    tools_format_prefixes = ("gpt-5",)
-    return any(model_name.startswith(prefix) for prefix in tools_format_prefixes)
-
 def vector_db_result_to_openai_chat_message(vector_db_result):
     return {"role": "user", "content": vector_db_result}
 
@@ -47,9 +39,7 @@ def is_phrase_based_action_event_log(event_log: EventLog) -> bool:
 def get_openai_chat_messages_from_transcript(
     merged_event_logs: List[EventLog],
     prompt_preamble: str,
-    model_name: str,
 ) -> List[dict]:
-    use_tools_format = is_tools_format_model(model_name)
     chat_messages = [{"role": "system", "content": prompt_preamble}]
     for event_log in merged_event_logs:
         if isinstance(event_log, Message):
@@ -63,51 +53,27 @@ def get_openai_chat_messages_from_transcript(
                     },
                 )
         elif isinstance(event_log, ActionStart):
-            action_message: Dict[str, Any]
             if is_phrase_based_action_event_log(event_log=event_log):
                 pass
             else:
-                if use_tools_format:
-                    action_message = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": f"call_{event_log.action_type}",
-                                "type": "function",
-                                "function": {
-                                    "name": event_log.action_type,
-                                    "arguments": event_log.action_input.params.json(),
-                                },
-                            }
-                        ],
-                    }
-                else:
-                    action_message = {
-                        "role": "assistant",
-                        "content": None,
-                        "function_call": {
-                            "name": event_log.action_type,
-                            "arguments": event_log.action_input.params.json(),
-                        },
-                    }
+                action_message = {
+                    "role": "assistant",
+                    "content": None,
+                    "function_call": {
+                        "name": event_log.action_type,
+                        "arguments": event_log.action_input.params.json(),
+                    },
+                }
                 chat_messages.append(action_message)
         elif isinstance(event_log, ActionFinish):
             if is_phrase_based_action_event_log(event_log=event_log):
                 pass
-            else: 
-                if use_tools_format:
-                    action_message = {
-                        "role": "tool",
-                        "tool_call_id": f"call_{event_log.action_type}",
-                        "content": event_log.to_string(include_header=False),
-                    }
-                else:
-                    action_message = {
-                        "role": "function",
-                        "name": event_log.action_type,
-                        "content": event_log.to_string(include_header=False),
-                    }
+            else:
+                action_message = {
+                    "role": "function",
+                    "name": event_log.action_type,
+                    "content": event_log.to_string(include_header=False),
+                }
                 chat_messages.append(action_message)
         elif isinstance(event_log, ConferenceEvent):
             chat_messages.append(
@@ -154,7 +120,6 @@ def format_openai_chat_messages_from_transcript(
     chat_messages = get_openai_chat_messages_from_transcript(
         merged_event_logs=merged_event_logs,
         prompt_preamble=prompt_preamble,
-        model_name=model_name,
     )
 
     context_size = num_tokens_from_messages(
@@ -171,11 +136,6 @@ def format_openai_chat_messages_from_transcript(
             break
         num_removed_messages += 1
         chat_messages.pop(1)
-        # Remove any orphaned tool/function responses that lost their preceding
-        # tool_calls message after the pop above, which would cause a 400 error.
-        while len(chat_messages) > 1 and chat_messages[1].get("role") in ("tool", "function"):
-            num_removed_messages += 1
-            chat_messages.pop(1)
         context_size = num_tokens_from_messages(
             messages=chat_messages,
             model=model_name,
@@ -218,14 +178,6 @@ async def openai_get_tokens(
                     else ""
                 ),
             )
-        elif delta.tool_calls is not None:
-            for tool_call in delta.tool_calls:
-                if tool_call.function is not None:
-                    yield FunctionFragment(
-                        name=(tool_call.function.name or ""),
-                        arguments=(tool_call.function.arguments or ""),
-                    )
-                    break
 
 
 def _to_fc_id(call_id: str) -> str:
