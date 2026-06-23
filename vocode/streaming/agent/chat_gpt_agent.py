@@ -29,10 +29,6 @@ from vocode.utils.sentry_utils import CustomSentrySpans, sentry_create_span
 
 ChatGPTAgentConfigType = TypeVar("ChatGPTAgentConfigType", bound=ChatGPTAgentConfig)
 
-# On the Responses API, reasoning tokens are billed against `max_output_tokens`, so a
-# fixed cap that fits the spoken reply gets starved by reasoning and the response
-# truncates with no visible text. We reserve headroom for reasoning ON TOP of the
-# speech budget (agent_config.max_tokens), sized per effort from observed usage.
 REASONING_TOKEN_RESERVE: Dict[str, int] = {
     "none": 0,
     "low": 256,
@@ -161,11 +157,6 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         }
 
         if is_reasoning_model:
-            # The Responses API expects reasoning effort nested under `reasoning`
-            # (e.g. {"effort": "low"}), NOT a top-level `reasoning_effort` string as in
-            # Chat Completions. The "off" value for gpt-5 is "none" (these models reject
-            # "minimal"). gpt-5 reasoning models also reject a non-default temperature,
-            # so temperature is omitted for them.
             re_cfg = self.agent_config.reasoning_effort
             if re_cfg is None or not re_cfg.reasoning:
                 effort = "none"
