@@ -161,7 +161,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             if re_cfg is None or not re_cfg.reasoning:
                 effort = "none"
             else:
-                effort = re_cfg.effort_level or "medium"
+                effort = re_cfg.effort_level or "none"
 
             parameters["reasoning"] = {"effort": effort}
             # Give reasoning its own budget on top of the speech budget so it can never

@@ -125,7 +125,7 @@ class LLMFallback(BaseModel):
 
 class ReasoningEffortConfig(BaseModel):
     reasoning: bool = True
-    effort_level: Optional[Literal["none", "low", "medium", "high", "xhigh"]] = "medium"
+    effort_level: Optional[Literal["none", "low", "medium", "high", "xhigh"]] = "none"
 
     @validator("effort_level", always=True)
     @classmethod
