@@ -117,6 +117,23 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
 
         return parameters
 
+    def _convert_messages_for_responses_api(self, messages: List[dict]) -> List[dict]:
+        converted = []
+        for msg in messages:
+            role = msg.get("role")
+            if role == "function":
+                # Responses API has no "function" role — surface result as a user message
+                converted.append({
+                    "role": "user",
+                    "content": f"[Function result for {msg.get('name', 'unknown')}]: {msg.get('content', '')}",
+                })
+            elif role == "assistant" and msg.get("content") is None:
+                # Skip assistant messages that are purely function_call with no text content
+                continue
+            else:
+                converted.append(msg)
+        return converted
+
     def get_responses_parameters(self, messages: Optional[List] = None):
         assert self.transcript is not None
 
@@ -127,9 +144,11 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             self.agent_config.prompt_preamble,
         )
 
+        input_messages = self._convert_messages_for_responses_api(messages)
+
         parameters: Dict[str, Any] = {
             "model": self.agent_config.model_name,
-            "input": messages,
+            "input": input_messages,
             "max_output_tokens": self.agent_config.max_tokens,
         }
 
