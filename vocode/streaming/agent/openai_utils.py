@@ -177,3 +177,16 @@ async def openai_get_tokens(
                     else ""
                 ),
             )
+
+
+async def openai_get_tokens_from_responses(
+    gen: AsyncGenerator,
+) -> AsyncGenerator[Union[str, FunctionFragment], None]:
+    async for event in gen:
+        event_type = getattr(event, "type", None)
+        if event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", None)
+            if delta:
+                yield delta
+        elif event_type == "response.done":
+            break

@@ -14,6 +14,7 @@ from vocode.streaming.agent.base_agent import GeneratedResponse, RespondAgent, S
 from vocode.streaming.agent.openai_utils import (
     format_openai_chat_messages_from_transcript,
     openai_get_tokens,
+    openai_get_tokens_from_responses,
     vector_db_result_to_openai_chat_message,
 )
 from vocode.streaming.agent.streaming_utils import collate_response_async, stream_response_async
@@ -83,6 +84,11 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             if isinstance(action_config.action_trigger, FunctionCallActionTrigger)
         ]
 
+    def _is_responses_endpoint(self) -> bool:
+        endpoint = self.agent_config.openai_endpoint
+        # null (existing agents) → completions; "responses" → responses; "completions" → completions
+        return endpoint == "responses"
+
     def get_chat_parameters(self, messages: Optional[List] = None, use_functions: bool = True):
         assert self.transcript is not None
         is_azure = self._is_azure_model()
@@ -108,6 +114,28 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
 
         if use_functions and self.functions:
             parameters["functions"] = self.functions
+
+        return parameters
+
+    def get_responses_parameters(self, messages: Optional[List] = None):
+        assert self.transcript is not None
+
+        messages = messages or format_openai_chat_messages_from_transcript(
+            self.transcript,
+            self.get_model_name_for_tokenizer(),
+            self.functions,
+            self.agent_config.prompt_preamble,
+        )
+
+        parameters: Dict[str, Any] = {
+            "model": self.agent_config.model_name,
+            "input": messages,
+            "max_output_tokens": self.agent_config.max_tokens,
+        }
+
+        effort = self.agent_config.reasoning_effort
+        if effort and effort != "none":
+            parameters["reasoning"] = {"effort": effort}
 
         return parameters
 
@@ -154,6 +182,10 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         return stream
 
     async def _create_openai_stream(self, chat_parameters: Dict[str, Any]) -> AsyncGenerator:
+        if self._is_responses_endpoint():
+            responses_parameters = self.get_responses_parameters()
+            responses_parameters["stream"] = True
+            return await self.openai_client.responses.create(**responses_parameters)
         if self.agent_config.llm_fallback is not None and self.openai_client.max_retries == 0:
             stream = await self._create_openai_stream_with_fallback(chat_parameters)
         else:
@@ -265,11 +297,16 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         )
         if using_input_streaming_synthesizer:
             response_generator = stream_response_async
+
+        token_generator = (
+            openai_get_tokens_from_responses(stream)
+            if self._is_responses_endpoint()
+            else openai_get_tokens(stream)
+        )
+
         async for message in response_generator(
             conversation_id=conversation_id,
-            gen=openai_get_tokens(
-                stream,
-            ),
+            gen=token_generator,
             get_functions=True,
             sentry_span=ttft_span,
         ):

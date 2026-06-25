@@ -137,6 +137,8 @@ class ChatGPTAgentConfig(AgentConfig, type=AgentType.CHAT_GPT.value):  # type: i
     backchannel_probability: float = 0.7
     first_response_filler_message: Optional[str] = None
     llm_fallback: Optional[LLMFallback] = None
+    openai_endpoint: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 class AnthropicAgentConfig(AgentConfig, type=AgentType.ANTHROPIC.value):  # type: ignore
