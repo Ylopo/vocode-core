@@ -152,6 +152,11 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             "max_output_tokens": self.agent_config.max_tokens,
         }
 
+        if self.functions:
+            parameters["tools"] = [
+                {"type": "function", **func} for func in self.functions
+            ]
+
         effort = self.agent_config.reasoning_effort
         if effort and effort != "none":
             parameters["reasoning"] = {"effort": effort}
