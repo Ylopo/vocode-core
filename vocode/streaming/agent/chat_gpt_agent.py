@@ -28,6 +28,14 @@ from vocode.utils.sentry_utils import CustomSentrySpans, sentry_create_span
 
 ChatGPTAgentConfigType = TypeVar("ChatGPTAgentConfigType", bound=ChatGPTAgentConfig)
 
+REASONING_TOKEN_RESERVE: Dict[str, int] = {
+    "none": 0,
+    "low": 256,
+    "medium": 1024,
+    "high": 2048,
+    "xhigh": 4096,
+}
+
 
 def instantiate_openai_client(agent_config: ChatGPTAgentConfig, model_fallback: bool = False):
     if agent_config.azure_params:
@@ -146,10 +154,13 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
 
         input_messages = self._convert_messages_for_responses_api(messages)
 
+        effort = self.agent_config.reasoning_effort
+        reasoning_reserve = REASONING_TOKEN_RESERVE.get(effort or "none", 0)
+
         parameters: Dict[str, Any] = {
             "model": self.agent_config.model_name,
             "input": input_messages,
-            "max_output_tokens": self.agent_config.max_tokens,
+            "max_output_tokens": self.agent_config.max_tokens + reasoning_reserve,
         }
 
         if self.functions:
@@ -157,7 +168,6 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
                 {"type": "function", **func} for func in self.functions
             ]
 
-        effort = self.agent_config.reasoning_effort
         if effort and effort != "none":
             parameters["reasoning"] = {"effort": effort}
 
