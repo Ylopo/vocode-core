@@ -185,7 +185,9 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         if self._is_responses_endpoint():
             responses_parameters = self.get_responses_parameters()
             responses_parameters["stream"] = True
+            logger.info(f"OpenAI responses API parameters: {responses_parameters}")
             return await self.openai_client.responses.create(**responses_parameters)
+        logger.info(f"OpenAI chat completions parameters: {chat_parameters}")
         if self.agent_config.llm_fallback is not None and self.openai_client.max_retries == 0:
             stream = await self._create_openai_stream_with_fallback(chat_parameters)
         else:
@@ -289,6 +291,9 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             sentry_callable=sentry_sdk.start_span, op=CustomSentrySpans.TIME_TO_FIRST_TOKEN
         )
 
+        logger.info(f"Human input: {human_input!r}")
+        logger.info(f"Chat parameters: {chat_parameters!r}")
+        
         stream = await self._create_openai_stream(chat_parameters)
 
         response_generator = collate_response_async
