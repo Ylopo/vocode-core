@@ -188,5 +188,14 @@ async def openai_get_tokens_from_responses(
             delta = getattr(event, "delta", None)
             if delta:
                 yield delta
+        elif event_type == "response.output_item.added":
+            item = getattr(event, "item", None)
+            if item and getattr(item, "type", None) == "function_call":
+                function_name = getattr(item, "name", "")
+                yield FunctionFragment(name=function_name, arguments="")
+        elif event_type == "response.function_call_arguments.delta":
+            delta = getattr(event, "delta", None)
+            if delta:
+                yield FunctionFragment(name="", arguments=delta)
         elif event_type == "response.done":
             break
