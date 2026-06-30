@@ -33,8 +33,8 @@ REASONING_TOKEN_RESERVE: Dict[str, int] = {
     "none": 0,
     "low": 256,
     "medium": 1024,
-    "high": 2048,
-    "xhigh": 4096,
+    "high": 4096,
+    "xhigh": 8192,
 }
 
 
