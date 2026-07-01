@@ -164,11 +164,10 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
                 effort = re_cfg.effort_level or "none"
 
             parameters["reasoning"] = {"effort": effort}
-            # Give reasoning its own budget on top of the speech budget so it can never
-            # starve the visible reply (see REASONING_TOKEN_RESERVE).
-            parameters["max_output_tokens"] = (
-                self.agent_config.max_tokens + REASONING_TOKEN_RESERVE.get(effort, 0)
-            )
+            if effort != "xhigh":
+                parameters["max_output_tokens"] = (
+                    self.agent_config.max_tokens + REASONING_TOKEN_RESERVE.get(effort, 0)
+                )
         else:
             parameters["max_output_tokens"] = self.agent_config.max_tokens
             parameters["temperature"] = self.agent_config.temperature
