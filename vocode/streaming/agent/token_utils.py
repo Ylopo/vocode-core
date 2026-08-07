@@ -60,6 +60,7 @@ CHAT_GPT_MAX_TOKENS = {
     "gpt-5.2": 399400,
     "gpt-5.4": 1049400,
     "gpt-5.4-mini": 399400,
+    "gpt-5.6-luna": 1049400,
 }
 
 
@@ -72,6 +73,8 @@ def get_chat_gpt_max_tokens(model_name: str):
         model_name = "gpt-4.1"
     if model_name.startswith("gpt-5.4-mini"):
         model_name = "gpt-5.4-mini"
+    elif model_name.startswith("gpt-5.6-luna"):
+        model_name = "gpt-5.6-luna"
     elif model_name.startswith("gpt-5.2"):
         model_name = "gpt-5.2"
     elif model_name.startswith("gpt-5.4"):
