@@ -180,11 +180,13 @@ class InterruptibleEventFactory:
         payload: Any,
         is_interruptible: bool = True,
         agent_response_tracker: Optional[asyncio.Event] = None,
+        interruption_event: Optional[threading.Event] = None,
     ) -> InterruptibleAgentResponseEvent:
         return InterruptibleAgentResponseEvent(
             payload,
             is_interruptible=is_interruptible,
             agent_response_tracker=agent_response_tracker or asyncio.Event(),
+            interruption_event=interruption_event,
         )
 
 

@@ -131,11 +131,13 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             payload: Any,
             is_interruptible: bool = True,
             agent_response_tracker: Optional[asyncio.Event] = None,
+            interruption_event: Optional[threading.Event] = None,
         ) -> InterruptibleAgentResponseEvent:
             interruptible_event = super().create_interruptible_agent_response_event(
                 payload,
                 is_interruptible=is_interruptible,
                 agent_response_tracker=agent_response_tracker,
+                interruption_event=interruption_event,
             )
             self.conversation.interruptible_events.put_nowait(interruptible_event)
             return interruptible_event
@@ -445,6 +447,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                             (agent_response_message.message, None),
                             is_interruptible=item.is_interruptible,
                             agent_response_tracker=item.agent_response_tracker,
+                            interruption_event=item.interruption_event,
                         ),
                     )
                     self.is_first_text_chunk = True
@@ -517,6 +520,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                             (agent_response_message.message, synthesis_result),
                             is_interruptible=item.is_interruptible,
                             agent_response_tracker=item.agent_response_tracker,
+                            interruption_event=item.interruption_event,
                         ),
                     )
                 self.last_agent_response_tracker = item.agent_response_tracker
