@@ -108,10 +108,17 @@ class BaseAction(Generic[ActionConfigType, ParametersType, ResponseType]):  # ty
 
     async def wait_for_turn_and_check_interrupted(self, action_input: ActionInput) -> bool:
         """Waits for this turn's message to finish. Returns True if it was interrupted
-        (i.e. never actually delivered), False if it completed normally."""
+        (i.e. never actually delivered), False if it completed normally.
+
+        Reads the shared interruption_event directly rather than calling is_interrupted():
+        by the time this turn's action runs, the upstream worker that generated this event
+        has already marked it is_interruptible=False (its own hand-off bookkeeping, unrelated
+        to whether the message was actually delivered), which would make is_interrupted()
+        always report False regardless of what happened downstream."""
         if action_input.user_message_tracker is not None:
             await action_input.user_message_tracker.wait()
         return bool(
             action_input.turn_response_event is not None
-            and action_input.turn_response_event.is_interrupted()
+            and action_input.turn_response_event.interruption_event is not None
+            and action_input.turn_response_event.interruption_event.is_set()
         )
