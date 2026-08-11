@@ -7,6 +7,9 @@ from pydantic.v1 import BaseModel, Field
 from vocode.streaming.models.message import BaseMessage
 from vocode.streaming.models.model import TypedModel
 
+from vocode.streaming.utils.worker import InterruptibleAgentResponseEvent
+
+
 TriggerType = Literal["action_trigger_function_call", "action_trigger_phrase_based"]
 
 
@@ -91,6 +94,7 @@ class ActionInput(BaseModel, Generic[ParametersType]):
     conversation_id: str
     params: ParametersType
     user_message_tracker: Optional[asyncio.Event] = None
+    turn_response_event: Optional[InterruptibleAgentResponseEvent] = None
 
     class Config:
         arbitrary_types_allowed = True

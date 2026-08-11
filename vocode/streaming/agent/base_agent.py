@@ -264,6 +264,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
 
         responses_buffer = ""
         end_of_turn_agent_response_tracker = None
+        end_of_turn_event = None
 
         async for generated_response in responses:
             if is_first_response_of_turn:
@@ -292,22 +293,17 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                 continue
 
             agent_response_tracker = agent_input.agent_response_tracker or asyncio.Event()
-            self.agent_responses_consumer.consume_nonblocking(
-                self.interruptible_event_factory.create_interruptible_agent_response_event(
-                    AgentResponseMessage(
-                        message=generated_response.message,
-                        is_first=is_first_response_of_turn,
-                    ),
-                    is_interruptible=self.agent_config.allow_agent_to_be_cut_off
-                    and generated_response.is_interruptible,
-                    agent_response_tracker=agent_response_tracker,
-                ),
+            event = self.interruptible_event_factory.create_interruptible_agent_response_event(   # capture return value
+                AgentResponseMessage(message=generated_response.message, is_first=is_first_response_of_turn),
+                is_interruptible=self.agent_config.allow_agent_to_be_cut_off and generated_response.is_interruptible,
+                agent_response_tracker=agent_response_tracker,
             )
+            self.agent_responses_consumer.consume_nonblocking(event)
             if isinstance(generated_response.message, BaseMessage):
                 responses_buffer = f"{responses_buffer} {generated_response.message.text}"
             elif isinstance(generated_response.message, EndOfTurn):
                 end_of_turn_agent_response_tracker = agent_response_tracker
-
+                end_of_turn_event = event
             if self.agent_config.end_conversation_on_goodbye and isinstance(
                 generated_response.message,
                 BaseMessage,
@@ -325,16 +321,12 @@ class RespondAgent(BaseAgent[AgentConfigType]):
             end_of_turn_agent_response_tracker = (
                 agent_input.agent_response_tracker or asyncio.Event()
             )
-            self.agent_responses_consumer.consume_nonblocking(
-                self.interruptible_event_factory.create_interruptible_agent_response_event(
-                    AgentResponseMessage(
-                        message=EndOfTurn(),
-                        is_first=is_first_response_of_turn,
-                    ),
-                    is_interruptible=self.agent_config.allow_agent_to_be_cut_off,
-                    agent_response_tracker=end_of_turn_agent_response_tracker,
-                ),
+            end_of_turn_event = self.interruptible_event_factory.create_interruptible_agent_response_event(
+                AgentResponseMessage(message=EndOfTurn(), is_first=is_first_response_of_turn),
+                is_interruptible=self.agent_config.allow_agent_to_be_cut_off,
+                agent_response_tracker=end_of_turn_agent_response_tracker,
             )
+            self.agent_responses_consumer.consume_nonblocking(end_of_turn_event)
 
         phrase_trigger_match_action_config = (
             matches_phrase_trigger(responses_buffer, self.agent_config.actions)
@@ -348,6 +340,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                 agent_input,
                 {},
                 end_of_turn_agent_response_tracker,
+                end_of_turn_event
             )
             self.enqueue_action_input(action, action_input, agent_input.conversation_id)
 
@@ -483,6 +476,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
         action = self.action_factory.create_action(action_config)
         params = json.loads(function_call.arguments)
         user_message_tracker = None
+        end_of_turn_event = None
         if "user_message" in params:
             user_message = params["user_message"]
             user_message_tracker = asyncio.Event()
@@ -495,13 +489,14 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                     is_interruptible=action.is_interruptible,
                 )
             )
-            self.agent_responses_consumer.consume_nonblocking(
-                self.interruptible_event_factory.create_interruptible_agent_response_event(
-                    AgentResponseMessage(message=EndOfTurn()),
-                    agent_response_tracker=user_message_tracker,
-                )
+            end_of_turn_event = self.interruptible_event_factory.create_interruptible_agent_response_event(
+                AgentResponseMessage(message=EndOfTurn()),
+                agent_response_tracker=user_message_tracker,
             )
-        action_input = self.create_action_input(action, agent_input, params, user_message_tracker)
+            self.agent_responses_consumer.consume_nonblocking(end_of_turn_event)
+        action_input = self.create_action_input(
+            action, agent_input, params, user_message_tracker, end_of_turn_event
+        )
         self.enqueue_action_input(action, action_input, agent_input.conversation_id)
 
     def create_action_input(
@@ -510,6 +505,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
         agent_input: AgentInput,
         params: Dict,
         user_message_tracker: Optional[asyncio.Event] = None,
+        turn_response_event: Optional[InterruptibleAgentResponseEvent] = None,
     ) -> ActionInput:
         action_input: ActionInput
         if isinstance(action, VonagePhoneConversationAction):
@@ -521,6 +517,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                 params,
                 agent_input.vonage_uuid,
                 user_message_tracker,
+                turn_response_event,
             )
         elif isinstance(action, TwilioPhoneConversationAction):
             assert (
@@ -531,12 +528,14 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                 params,
                 agent_input.twilio_sid,
                 user_message_tracker,
+                turn_response_event,
             )
         else:
             action_input = action.create_action_input(
                 agent_input.conversation_id,
                 params,
                 user_message_tracker,
+                turn_response_event,
             )
         return action_input
 

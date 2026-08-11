@@ -12,6 +12,7 @@ from vocode.streaming.models.actions import (
     ParametersType,
     ResponseType,
 )
+from vocode.streaming.utils.worker import InterruptibleAgentResponseEvent
 
 if TYPE_CHECKING:
     from vocode.streaming.utils.state_manager import AbstractConversationStateManager
@@ -85,6 +86,7 @@ class BaseAction(Generic[ActionConfigType, ParametersType, ResponseType]):  # ty
         conversation_id: str,
         params: Dict[str, Any],
         user_message_tracker: Optional[asyncio.Event] = None,
+        turn_response_event: Optional[InterruptibleAgentResponseEvent] = None,
     ) -> ActionInput[ParametersType]:
         if "user_message" in params:
             del params["user_message"]
@@ -93,6 +95,7 @@ class BaseAction(Generic[ActionConfigType, ParametersType, ResponseType]):  # ty
             conversation_id=conversation_id,
             params=self.create_action_params(params),
             user_message_tracker=user_message_tracker,
+            turn_response_event=turn_response_event,
         )
 
     def _user_message_param_info(self):
@@ -102,3 +105,13 @@ class BaseAction(Generic[ActionConfigType, ParametersType, ResponseType]):  # ty
                     Essentially a live response informing them that the function is about to happen.
                     Eg Let me check the weather in San Francisco CA for you """,
         }
+
+    async def wait_for_turn_and_check_interrupted(self, action_input: ActionInput) -> bool:
+        """Waits for this turn's message to finish. Returns True if it was interrupted
+        (i.e. never actually delivered), False if it completed normally."""
+        if action_input.user_message_tracker is not None:
+            await action_input.user_message_tracker.wait()
+        return bool(
+            action_input.turn_response_event is not None
+            and action_input.turn_response_event.is_interrupted()
+        )

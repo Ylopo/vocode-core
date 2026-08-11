@@ -70,11 +70,8 @@ class EndConversation(
     async def run(
         self, action_input: ActionInput[EndConversationParameters]
     ) -> ActionOutput[EndConversationResponse]:
-        if action_input.user_message_tracker is not None:
-            await action_input.user_message_tracker.wait()
-
-        if self.conversation_state_manager.transcript.was_last_message_interrupted():
-            logger.info("Last bot message was interrupted")
+        if await self.wait_for_turn_and_check_interrupted(action_input):
+            logger.info("Farewell message was interrupted")
             return ActionOutput(
                 action_type=action_input.action_config.type,
                 response=EndConversationResponse(success=False),

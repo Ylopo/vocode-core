@@ -13,6 +13,7 @@ from vocode.streaming.utils.state_manager import (
     TwilioPhoneConversationStateManager,
     VonagePhoneConversationStateManager,
 )
+from vocode.streaming.utils.worker import InterruptibleAgentResponseEvent
 
 
 class VonagePhoneConversationAction(BaseAction[ActionConfigType, ParametersType, ResponseType]):
@@ -22,6 +23,7 @@ class VonagePhoneConversationAction(BaseAction[ActionConfigType, ParametersType,
         params: Dict[str, Any],
         vonage_uuid: str,
         user_message_tracker: Optional[asyncio.Event] = None,
+        turn_response_event: Optional[InterruptibleAgentResponseEvent] = None,
     ) -> VonagePhoneConversationActionInput[ParametersType]:
         if "user_message" in params:
             del params["user_message"]
@@ -31,6 +33,7 @@ class VonagePhoneConversationAction(BaseAction[ActionConfigType, ParametersType,
             params=self.parameters_type(**params),
             vonage_uuid=vonage_uuid,
             user_message_tracker=user_message_tracker,
+            turn_response_event=turn_response_event,
         )
 
     def get_vonage_uuid(self, action_input: ActionInput[ParametersType]) -> str:
@@ -49,6 +52,7 @@ class TwilioPhoneConversationAction(BaseAction[ActionConfigType, ParametersType,
         params: Dict[str, Any],
         twilio_sid: str,
         user_message_tracker: Optional[asyncio.Event] = None,
+        turn_response_event: Optional[InterruptibleAgentResponseEvent] = None,
     ) -> TwilioPhoneConversationActionInput[ParametersType]:
         if "user_message" in params:
             del params["user_message"]
@@ -58,6 +62,7 @@ class TwilioPhoneConversationAction(BaseAction[ActionConfigType, ParametersType,
             params=self.parameters_type(**params),
             twilio_sid=twilio_sid,
             user_message_tracker=user_message_tracker,
+            turn_response_event=turn_response_event,
         )
 
     def get_twilio_sid(self, action_input: ActionInput[ParametersType]) -> str:
