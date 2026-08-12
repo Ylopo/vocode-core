@@ -1,5 +1,6 @@
 from typing import Type
 
+from loguru import logger
 from pydantic.v1 import BaseModel
 
 from vocode.streaming.action.base_action import BaseAction
@@ -43,8 +44,12 @@ class Wait(
         )
 
     async def run(self, action_input: ActionInput[WaitParameters]) -> ActionOutput[WaitResponse]:
-        if action_input.user_message_tracker is not None:
-            await action_input.user_message_tracker.wait()
+        if await self.wait_for_turn_and_check_interrupted(action_input):
+            logger.warning("Triggering message was interrupted")
+            return ActionOutput(
+                action_type=action_input.action_config.type,
+                response=WaitResponse(success=False),
+            )
 
         return ActionOutput(
             action_type=action_input.action_config.type,

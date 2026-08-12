@@ -120,17 +120,14 @@ class TwilioTransferCall(
         phone_number = self.action_config.get_phone_number(action_input)
         sanitized_phone_number = sanitize_phone_number(phone_number)
 
-        if action_input.user_message_tracker is not None:
-            await action_input.user_message_tracker.wait()
-
-        logger.info("Finished waiting for user message tracker, now attempting to transfer call")
-
-        if self.conversation_state_manager.transcript.was_last_message_interrupted():
-            logger.info("Last bot message was interrupted, not transferring call")
+        if await self.wait_for_turn_and_check_interrupted(action_input):
+            logger.info("Triggering message was interrupted, not transferring call")
             return ActionOutput(
                 action_type=action_input.action_config.type,
                 response=TransferCallResponse(success=False),
             )
+
+        logger.info("Finished waiting for user message tracker, now attempting to transfer call")
 
         await self.transfer_call(twilio_call_sid, sanitized_phone_number)
 
@@ -167,8 +164,12 @@ class VonageTransferCall(
     async def run(
         self, action_input: ActionInput[TransferCallParameters]
     ) -> ActionOutput[TransferCallResponse]:
-        if action_input.user_message_tracker is not None:
-            await action_input.user_message_tracker.wait()
+        if await self.wait_for_turn_and_check_interrupted(action_input):
+            logger.info("Triggering message was interrupted, not transferring call")
+            return ActionOutput(
+                action_type=action_input.action_config.type,
+                response=TransferCallResponse(success=False),
+            )
         self.conversation_state_manager.mute_agent()
 
         phone_number = self.action_config.get_phone_number(action_input)

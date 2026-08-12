@@ -1,6 +1,7 @@
 import json
 from typing import Any, Dict, Optional, Type
 
+from loguru import logger
 from pydantic.v1 import BaseModel
 
 from vocode.streaming.action.base_action import BaseAction
@@ -88,9 +89,12 @@ class ExecuteExternalAction(
     async def run(
         self, action_input: ActionInput[ExecuteExternalActionParameters]
     ) -> ActionOutput[ExecuteExternalActionResponse]:
-        # TODO: this interruption handling needs to be refactored / DRYd
-        if self.should_respond and action_input.user_message_tracker is not None:
-            await action_input.user_message_tracker.wait()
+        if self.should_respond and await self.wait_for_turn_and_check_interrupted(action_input):
+            logger.warning("Triggering message was interrupted — not sending external action")
+            return ActionOutput(
+                action_type=action_input.action_config.type,
+                response=ExecuteExternalActionResponse(success=False, result=None),
+            )
 
         self.conversation_state_manager.mute_agent()
         response = await self.send_external_action_request(action_input)

@@ -78,10 +78,7 @@ class EndConversationVoicemail(
     async def run(
         self, action_input: ActionInput[EndConversationVoicemailParameters]
     ) -> ActionOutput[EndConversationVoicemailResponse]:
-        if action_input.user_message_tracker is not None:
-            await action_input.user_message_tracker.wait()
-
-        was_interrupted = self.conversation_state_manager.transcript.was_last_message_interrupted()
+        was_interrupted = await self.wait_for_turn_and_check_interrupted(action_input)
 
         if was_interrupted:
             logger.info(
