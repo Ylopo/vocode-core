@@ -202,9 +202,29 @@ def format_openai_responses_input_from_transcript(
     - Assistant tool_calls / function_call entries become top-level function_call items.
     - tool / function result entries become top-level function_call_output items.
     - IDs are normalised from the 'call_' prefix to the 'fc_' prefix the Responses API requires.
+    - Transcript-derived IDs get a per-invocation suffix. The transcript only records the
+      action *type*, so calling one action twice would otherwise emit duplicate call_ids and
+      the Responses API could not pair each call with its own output.
     """
     instructions: Optional[str] = None
     input_messages: List[Dict] = []
+
+    # Calls are queued per action name and dequeued FIFO by their matching output, so the
+    # nth result is always paired with the nth call of that name.
+    call_counts: Dict[str, int] = {}
+    pending_call_ids: Dict[str, List[str]] = {}
+
+    def next_call_id(name: str) -> str:
+        call_counts[name] = call_counts.get(name, 0) + 1
+        fc_id = _to_fc_id(f"call_{name}_{call_counts[name]}")
+        pending_call_ids.setdefault(name, []).append(fc_id)
+        return fc_id
+
+    def take_call_id(name: str) -> Optional[str]:
+        queue = pending_call_ids.get(name)
+        if queue:
+            return queue.pop(0)
+        return None
 
     for msg in chat_messages:
         role = msg.get("role")
@@ -234,7 +254,7 @@ def format_openai_responses_input_from_transcript(
                         }
                     )
             elif function_call:
-                fc_id = _to_fc_id(f"call_{function_call['name']}")
+                fc_id = next_call_id(function_call["name"])
                 if msg.get("content"):
                     input_messages.append({"role": "assistant", "content": msg["content"]})
                 input_messages.append(
@@ -259,15 +279,46 @@ def format_openai_responses_input_from_transcript(
             )
 
         elif role == "function":
-            input_messages.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": _to_fc_id(f"call_{msg['name']}"),
-                    "output": msg.get("content", ""),
-                }
-            )
+            name = msg["name"]
+            call_id = take_call_id(name)
+            if call_id is None:
+                # The matching call is not in this window - format_openai_chat_messages_from
+                # _transcript trims from the front, so an ActionStart can be dropped while its
+                # ActionFinish survives. A function_call_output with no call would be rejected
+                # outright, so preserve the result as plain text instead of losing it.
+                logger.debug(
+                    f"No function_call in context for {name!r} result; "
+                    "passing it through as a user message"
+                )
+                input_messages.append(
+                    {
+                        "role": "user",
+                        "content": f"[Result of {name}]: {msg.get('content', '')}",
+                    }
+                )
+            else:
+                input_messages.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": msg.get("content", ""),
+                    }
+                )
 
     return instructions, input_messages
+
+
+def _incomplete_reason(event: Any) -> str:
+    """Why the model stopped early - 'max_output_tokens', 'content_filter', ..."""
+    details = getattr(getattr(event, "response", None), "incomplete_details", None)
+    return getattr(details, "reason", None) or "unknown"
+
+
+def _response_error(event: Any) -> str:
+    error = getattr(getattr(event, "response", None), "error", None)
+    if error is None:
+        return "unknown error"
+    return f"{getattr(error, 'code', None)}: {getattr(error, 'message', None)}"
 
 
 async def responses_get_tokens(
@@ -294,6 +345,31 @@ async def responses_get_tokens(
                 arguments=getattr(event, "delta", "") or "",
             )
             current_function_name = ""  # name only travels with the first fragment
+
+        elif event_type == "response.refusal.done":
+            # deliberately not yielded: a refusal must never reach the synthesizer as speech
+            logger.warning(
+                f"Model refused to respond: {getattr(event, 'refusal', '') or '<empty>'}"
+            )
+
+        elif event_type == "response.incomplete":
+            # 'max_output_tokens' here means the reasoning pass consumed the budget before
+            # producing visible output - the bot goes silent with no other signal
+            logger.warning(
+                f"Responses stream ended incomplete (reason: {_incomplete_reason(event)})"
+            )
+            break
+
+        elif event_type == "response.failed":
+            logger.error(f"Responses stream failed: {_response_error(event)}")
+            break
+
+        elif event_type == "error":
+            logger.error(
+                "Responses stream emitted an error event: "
+                f"code={getattr(event, 'code', None)} message={getattr(event, 'message', None)}"
+            )
+            break
 
         elif event_type == "response.completed":
             break
