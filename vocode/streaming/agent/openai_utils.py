@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 from loguru import logger
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
@@ -68,12 +68,15 @@ def get_openai_chat_messages_from_transcript(
                 }
                 chat_messages.append(action_message)
         elif isinstance(event_log, ActionFinish):
-            action_message = {
-                "role": "function",
-                "name": event_log.action_type,
-                "content": event_log.to_string(include_header=False),
-            }
-            chat_messages.append(action_message)
+            if is_phrase_based_action_event_log(event_log=event_log):
+                pass
+            else:
+                action_message = {
+                    "role": "function",
+                    "name": event_log.action_type,
+                    "content": event_log.to_string(include_header=False),
+                }
+                chat_messages.append(action_message)
         elif isinstance(event_log, ConferenceEvent):
             chat_messages.append(
                 {"role": "user", "content": event_log.to_string(include_sender=False)},
@@ -177,3 +180,120 @@ async def openai_get_tokens(
                     else ""
                 ),
             )
+
+
+def _to_fc_id(call_id: str) -> str:
+    """Responses API requires function call IDs to start with 'fc_', not 'call_'."""
+    if call_id.startswith("call_"):
+        return "fc_" + call_id[5:]
+    if not call_id.startswith("fc_"):
+        return "fc_" + call_id
+    return call_id
+
+
+def format_openai_responses_input_from_transcript(
+    chat_messages: List[Dict],
+) -> Tuple[Optional[str], List[Dict]]:
+    """
+    Convert a chat-completions message list into the (instructions, input) pair
+    expected by the OpenAI Responses API.
+
+    - System messages become the `instructions` string.
+    - Assistant tool_calls / function_call entries become top-level function_call items.
+    - tool / function result entries become top-level function_call_output items.
+    - IDs are normalised from the 'call_' prefix to the 'fc_' prefix the Responses API requires.
+    """
+    instructions: Optional[str] = None
+    input_messages: List[Dict] = []
+
+    for msg in chat_messages:
+        role = msg.get("role")
+
+        if role == "system":
+            instructions = msg.get("content", "")
+            continue
+
+        if role in ("user", "assistant"):
+            tool_calls = msg.get("tool_calls")
+            function_call = msg.get("function_call")
+
+            if tool_calls:
+                # Any text content comes first as a plain assistant message
+                if msg.get("content"):
+                    input_messages.append({"role": "assistant", "content": msg["content"]})
+                # Each function call is a top-level item - NOT wrapped in a role/content array
+                for tc in tool_calls:
+                    fc_id = _to_fc_id(tc["id"])
+                    input_messages.append(
+                        {
+                            "type": "function_call",
+                            "id": fc_id,
+                            "call_id": fc_id,
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"],
+                        }
+                    )
+            elif function_call:
+                fc_id = _to_fc_id(f"call_{function_call['name']}")
+                if msg.get("content"):
+                    input_messages.append({"role": "assistant", "content": msg["content"]})
+                input_messages.append(
+                    {
+                        "type": "function_call",
+                        "id": fc_id,
+                        "call_id": fc_id,
+                        "name": function_call["name"],
+                        "arguments": function_call["arguments"],
+                    }
+                )
+            else:
+                input_messages.append({"role": role, "content": msg.get("content", "")})
+
+        elif role == "tool":
+            input_messages.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": _to_fc_id(msg["tool_call_id"]),
+                    "output": msg.get("content", ""),
+                }
+            )
+
+        elif role == "function":
+            input_messages.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": _to_fc_id(f"call_{msg['name']}"),
+                    "output": msg.get("content", ""),
+                }
+            )
+
+    return instructions, input_messages
+
+
+async def responses_get_tokens(
+    gen: AsyncGenerator,
+) -> AsyncGenerator[Union[str, FunctionFragment], None]:
+    """Extract text tokens and function-call fragments from a Responses API stream."""
+    current_function_name = ""
+    async for event in gen:
+        event_type = getattr(event, "type", None)
+
+        if event_type == "response.output_item.added":
+            item = getattr(event, "item", None)
+            if item and getattr(item, "type", None) == "function_call":
+                current_function_name = getattr(item, "name", "") or ""
+
+        elif event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                yield delta
+
+        elif event_type == "response.function_call_arguments.delta":
+            yield FunctionFragment(
+                name=current_function_name,
+                arguments=getattr(event, "delta", "") or "",
+            )
+            current_function_name = ""  # name only travels with the first fragment
+
+        elif event_type == "response.completed":
+            break
