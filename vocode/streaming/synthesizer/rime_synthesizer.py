@@ -17,6 +17,7 @@ from vocode.streaming.models.synthesizer import (
     RimeSynthesizerConfig,
 )
 from vocode.streaming.synthesizer.base_synthesizer import BaseSynthesizer, SynthesisResult
+from vocode.streaming.utils.create_task import asyncio_create_task
 
 # TODO: [OSS] Remove call to internal library with Synthesizers refactor
 
@@ -67,36 +68,20 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         headers = {
             "Authorization": self.api_key,
             "Content-Type": "application/json",
-            **({"Accept": "audio/pcm"} if use_pcm else {}),
+            **({"Accept": "audio/PCMU"} if use_pcm else {}),
         }
 
         body = self.get_request_body(message.text)
 
-        async with self.async_requestor.get_session().post(
-            self.base_url,
-            headers=headers,
-            json=body,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as response:
-            if not response.ok:
-                raise RimeError(f"Rime API error: {response.status}, {await response.text()}")
+        chunk_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        asyncio_create_task(
+            self.get_chunks(headers, body, chunk_size, chunk_queue),
+        )
 
-            if use_pcm:
-                output_bytes = await response.read()
-            else:
-                data = json.loads(await response.text())
-                audio_content = data.get("audioContent")
-                output_bytes = base64.b64decode(audio_content)[WAV_HEADER_LENGTH:]
-
-            if self.synthesizer_config.audio_encoding == AudioEncoding.MULAW:
-                output_bytes = audioop.lin2ulaw(output_bytes, 2)
-
-            return SynthesisResult(
-                self._chunk_generator(output_bytes, chunk_size),
-                lambda seconds: self.get_message_cutoff_from_total_response_length(
-                    self.synthesizer_config, message, seconds, len(output_bytes)
-                ),
-            )
+        return SynthesisResult(
+            self.chunk_result_generator_from_queue(chunk_queue),
+            lambda seconds: self.get_message_cutoff_from_voice_speed(message, seconds, 150),
+        )
 
     @staticmethod
     async def _chunk_generator(output_bytes, chunk_size):
