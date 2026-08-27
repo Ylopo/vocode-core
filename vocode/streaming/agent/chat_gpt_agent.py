@@ -343,6 +343,11 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             sentry_callable=sentry_sdk.start_span, op=CustomSentrySpans.TIME_TO_FIRST_TOKEN
         )
 
+        # NOTE: logs the full prompt and transcript on every turn - useful while validating
+        # the Responses request shape, but drop or downgrade to DEBUG before wide rollout
+        logger.info(f"Human input: {human_input!r}")
+        logger.info(f"Chat parameters: {chat_parameters!r}")
+
         if use_responses:
             stream = await self._create_responses_stream(chat_parameters)
             token_gen = responses_get_tokens(stream)
