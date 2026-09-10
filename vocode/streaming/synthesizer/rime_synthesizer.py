@@ -233,7 +233,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             async with websockets.connect(
                 RIME_WS_URL,
                 subprotocols=[RIME_WS_SUBPROTOCOL],
-                additional_headers={"Authorization": self.api_key},
+                extra_headers={"Authorization": self.api_key},
             ) as ws:
                 await ws.recv()
                 await ws.send(json.dumps({"contextId": context_id, "start": start}))
