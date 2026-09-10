@@ -197,7 +197,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         finally:
             chunk_queue.put_nowait(None)  # treated as sentinel
 
-    async def get_ws_chunks(self, body: dict, chunk_queue: asyncio.Queue):
+    async def get_ws_chunks(self, body: dict, chunk_size: int, chunk_queue: asyncio.Queue):
         context_id = str(uuid.uuid4())
         ids = _rime_log_ids(self)
         start = {
@@ -229,6 +229,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         frames = 0
         first_chunk_at = None
         request_id = ""
+        buffer = b""
         try:
             async with websockets.connect(
                 RIME_WS_URL,
@@ -244,10 +245,13 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
                     if "audio" in message:
                         if first_chunk_at is None:
                             first_chunk_at = time.monotonic()
-                        chunk = base64.b64decode(message["audio"])
-                        total_bytes += len(chunk)
+                        decoded = base64.b64decode(message["audio"])
+                        total_bytes += len(decoded)
                         frames += 1
-                        chunk_queue.put_nowait(chunk)
+                        buffer += decoded
+                        while len(buffer) >= chunk_size:
+                            chunk_queue.put_nowait(buffer[:chunk_size])
+                            buffer = buffer[chunk_size:]
                         continue
                     if "started" in message:
                         request_id = message["started"].get("requestId", "")
@@ -267,6 +271,8 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
                         raise RimeError(f"Rime websocket error: {message['error']}")
                     if "done" in message or "cancelled" in message:
                         break
+                if buffer:
+                    chunk_queue.put_nowait(buffer)
                 logger.info(
                     "Rime response: "
                     + json.dumps(
