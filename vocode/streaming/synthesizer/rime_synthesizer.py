@@ -3,13 +3,18 @@ import audioop
 import base64
 import io
 import json
+import time
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 import aiohttp
 import websockets
 from loguru import logger
 
+from app import call_id as ctx_call_id
+
+from vocode import conversation_id as ctx_conversation_id
 from vocode import getenv
 from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.models.message import BaseMessage
@@ -34,6 +39,15 @@ RIME_WS_AUDIO_PARAMETERS = {"audioFormat": "audio/PCMU", "samplingRate": 8000}
 
 class RimeError(Exception):
     pass
+
+
+def _rime_log_ids(synthesizer):
+    conversation = getattr(synthesizer, "streaming_conversation", None)
+    return {
+        "conversation_id": ctx_conversation_id.value
+        or (conversation.id if conversation else None),
+        "call_id": str(ctx_call_id.value) if ctx_call_id.value else None,
+    }
 
 
 class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
@@ -82,9 +96,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
 
         chunk_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         asyncio_create_task(
-            self.get_ws_chunks(body, chunk_queue)
-            if self.use_websocket and self.model_id == "coda"
-            else self.get_chunks(headers, body, chunk_size, chunk_queue),
+            self.get_chunks(headers, body, chunk_size, chunk_queue),
         )
 
         return SynthesisResult(
@@ -107,6 +119,23 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         chunk_size: int,
         chunk_queue: asyncio.Queue[Optional[bytes]],
     ):
+        ids = _rime_log_ids(self)
+        logger.info(
+            "Rime request: "
+            + json.dumps(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "transport": "http",
+                    "url": self.base_url,
+                    "body": body,
+                    **ids,
+                },
+                ensure_ascii=False,
+            )
+        )
+        started_at = time.monotonic()
+        total_bytes = 0
+        first_chunk_at = None
         try:
             async_client = self.async_requestor.get_client()
             stream = await async_client.send(
@@ -120,11 +149,49 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             )
             if not stream.is_success:
                 error = await stream.aread()
+                text = error.decode("utf-8", "replace")
+                try:
+                    detail = json.loads(text)
+                except ValueError:
+                    detail = text.strip()
+                logger.error(
+                    "Rime response error: "
+                    + json.dumps(
+                        {
+                            "transport": "http",
+                            "status": stream.status_code,
+                            "content_type": stream.headers.get("content-type", ""),
+                            "error": detail,
+                            **ids,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
                 raise RimeError(
-                    f"Rime API returned {stream.status_code} status code with the following details: {error.decode('utf-8')}"
+                    f"Rime API returned {stream.status_code} status code with the following details: {text}"
                 )
             async for chunk in stream.aiter_bytes(chunk_size):
+                if first_chunk_at is None:
+                    first_chunk_at = time.monotonic()
+                total_bytes += len(chunk)
                 chunk_queue.put_nowait(chunk)
+            logger.info(
+                "Rime response: "
+                + json.dumps(
+                    {
+                        "transport": "http",
+                        "status": stream.status_code,
+                        "headers": dict(stream.headers),
+                        "total_bytes": total_bytes,
+                        "ttfb_ms": (
+                            round((first_chunk_at - started_at) * 1000) if first_chunk_at else None
+                        ),
+                        "ttlb_ms": round((time.monotonic() - started_at) * 1000),
+                        **ids,
+                    },
+                    ensure_ascii=False,
+                )
+            )
         except asyncio.CancelledError:
             pass
         finally:
@@ -132,6 +199,36 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
 
     async def get_ws_chunks(self, body: dict, chunk_queue: asyncio.Queue):
         context_id = str(uuid.uuid4())
+        ids = _rime_log_ids(self)
+        start = {
+            "speaker": body["speaker"],
+            "language": "en",
+            "text": "",
+            "audioParameters": {
+                **RIME_WS_AUDIO_PARAMETERS,
+                "timeScaleFactor": 1 / (body.get("speedAlpha") or 1),
+            },
+        }
+        logger.info(
+            "Rime request: "
+            + json.dumps(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "transport": "websocket",
+                    "url": RIME_WS_URL,
+                    "context_id": context_id,
+                    "start": start,
+                    "text": body["text"],
+                    **ids,
+                },
+                ensure_ascii=False,
+            )
+        )
+        started_at = time.monotonic()
+        total_bytes = 0
+        frames = 0
+        first_chunk_at = None
+        request_id = ""
         try:
             async with websockets.connect(
                 RIME_WS_URL,
@@ -139,33 +236,57 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
                 additional_headers={"Authorization": self.api_key},
             ) as ws:
                 await ws.recv()
-                await ws.send(
-                    json.dumps(
-                        {
-                            "contextId": context_id,
-                            "start": {
-                                "speaker": body["speaker"],
-                                "language": "en",
-                                "text": "",
-                                "audioParameters": {
-                                    **RIME_WS_AUDIO_PARAMETERS,
-                                    "timeScaleFactor": 1 / (body.get("speedAlpha") or 1),
-                                },
-                            },
-                        }
-                    )
-                )
+                await ws.send(json.dumps({"contextId": context_id, "start": start}))
                 await ws.send(json.dumps({"contextId": context_id, "text": body["text"]}))
                 await ws.send(json.dumps({"contextId": context_id, "end": {}}))
                 while True:
                     message = json.loads(await ws.recv())
                     if "audio" in message:
-                        chunk_queue.put_nowait(base64.b64decode(message["audio"]))
+                        if first_chunk_at is None:
+                            first_chunk_at = time.monotonic()
+                        chunk = base64.b64decode(message["audio"])
+                        total_bytes += len(chunk)
+                        frames += 1
+                        chunk_queue.put_nowait(chunk)
                         continue
+                    if "started" in message:
+                        request_id = message["started"].get("requestId", "")
                     if "error" in message:
+                        logger.error(
+                            "Rime response error: "
+                            + json.dumps(
+                                {
+                                    "transport": "websocket",
+                                    "context_id": context_id,
+                                    "error": message["error"],
+                                    **ids,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
                         raise RimeError(f"Rime websocket error: {message['error']}")
                     if "done" in message or "cancelled" in message:
                         break
+                logger.info(
+                    "Rime response: "
+                    + json.dumps(
+                        {
+                            "transport": "websocket",
+                            "context_id": context_id,
+                            "request_id": request_id,
+                            "total_bytes": total_bytes,
+                            "frames": frames,
+                            "ttfb_ms": (
+                                round((first_chunk_at - started_at) * 1000)
+                                if first_chunk_at
+                                else None
+                            ),
+                            "ttlb_ms": round((time.monotonic() - started_at) * 1000),
+                            **ids,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
         except asyncio.CancelledError:
             pass
         finally:
