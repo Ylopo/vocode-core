@@ -27,7 +27,14 @@ def split_sentences(text: str) -> List[str]:
         buffer += sentence
         if not is_last:
             buffer += ". "
-        if not re.fullmatch(r"\d+", sentence.strip()):
+        last_word = sentence.strip().split()[-1] if sentence.strip() else ""
+        next_char = initial_split[i + 1].lstrip()[:1] if not is_last else ""
+        continues_sentence = (
+            re.fullmatch(r"\d+", sentence.strip())
+            or re.fullmatch(r"[A-Za-z]", last_word)
+            or (next_char and not next_char.isupper())
+        )
+        if not continues_sentence:
             final_split.append(buffer.strip())
             buffer = ""
 
@@ -82,7 +89,8 @@ async def collate_response_async(
                 sentences = split_sentences(buffer)
                 if len(sentences) > 1:
                     yield " ".join(sentences[:-1])
-                    buffer = sentences[-1]
+                    split_point = buffer.rfind(sentences[-1])
+                    buffer = buffer[split_point:] if split_point > 0 else sentences[-1]
                 is_post_period = False
                 tokens_since_period = 0
             else:

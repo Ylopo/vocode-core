@@ -1,4 +1,6 @@
 import asyncio
+import html
+import re
 import audioop
 import io
 import math
@@ -217,6 +219,23 @@ class CachedAudio:
         )
 
 
+_BRACKETED = re.compile(r"\[.*?\]|\{.*?\}|<.*?>", re.DOTALL)
+_WHOLE_WRAPPED = re.compile(r"^\s*(?:\(.*\)|\*+.*?\*+)\s*$", re.DOTALL)
+_HTML_ENTITY = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
+
+
+def strip_non_speech(text: str) -> str:
+    if _HTML_ENTITY.search(text):
+        text = html.unescape(text)
+    if _WHOLE_WRAPPED.match(text):
+        return ""
+    text = _BRACKETED.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"([,;:])\s*(?=[,.;:])", "", text)
+    return text.strip()
+
+
 class SilenceAudio(CachedAudio):
     def __init__(
         self,
@@ -369,6 +388,10 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
                 self.synthesizer_config,
             ).create_synthesis_result(chunk_size)
 
+        if not re.search(r"[A-Za-z0-9]", strip_non_speech(message.text)):
+            logger.info(f"Skipping synthesis, no speakable content: {message.text!r}")
+            return SynthesisResult(self._no_audio_generator(), lambda seconds: message.text)
+
         maybe_cached_audio = await self.get_cached_audio(message)
         if maybe_cached_audio is not None:
             return maybe_cached_audio.create_synthesis_result(chunk_size)
@@ -378,6 +401,11 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
             is_first_text_chunk=is_first_text_chunk,
             is_sole_text_chunk=is_sole_text_chunk,
         )
+
+    @staticmethod
+    async def _no_audio_generator():
+        return
+        yield
 
     async def chunk_result_generator_from_queue(self, chunk_queue: asyncio.Queue[Optional[bytes]]):
         while True:

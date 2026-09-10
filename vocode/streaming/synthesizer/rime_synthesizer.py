@@ -3,9 +3,11 @@ import audioop
 import base64
 import io
 import json
+import uuid
 from typing import Optional
 
 import aiohttp
+import websockets
 from loguru import logger
 
 from vocode import getenv
@@ -16,7 +18,7 @@ from vocode.streaming.models.synthesizer import (
     RIME_DEFAULT_SPEED_ALPHA,
     RimeSynthesizerConfig,
 )
-from vocode.streaming.synthesizer.base_synthesizer import BaseSynthesizer, SynthesisResult
+from vocode.streaming.synthesizer.base_synthesizer import BaseSynthesizer, SynthesisResult, strip_non_speech
 from vocode.streaming.utils.create_task import asyncio_create_task
 
 # TODO: [OSS] Remove call to internal library with Synthesizers refactor
@@ -24,6 +26,10 @@ from vocode.streaming.utils.create_task import asyncio_create_task
 # https://rime.ai/docs/quickstart
 
 WAV_HEADER_LENGTH = 44
+
+RIME_WS_URL = "wss://api.rime.ai/coda/ws"
+RIME_WS_SUBPROTOCOL = "rime.v1.json"
+RIME_WS_AUDIO_PARAMETERS = {"audioFormat": "audio/PCMU", "samplingRate": 8000}
 
 
 class RimeError(Exception):
@@ -39,7 +45,8 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
 
         self.base_url = synthesizer_config.base_url
         self.model_id = synthesizer_config.model_id
-        self.speaker = synthesizer_config.speaker
+        self.use_websocket = synthesizer_config.speaker.endswith("-ws")
+        self.speaker = synthesizer_config.speaker.removesuffix("-ws")
         self.speed_alpha = synthesizer_config.speed_alpha
         self.sampling_rate = synthesizer_config.sampling_rate
         self.reduce_latency = synthesizer_config.reduce_latency
@@ -75,7 +82,9 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
 
         chunk_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         asyncio_create_task(
-            self.get_chunks(headers, body, chunk_size, chunk_queue),
+            self.get_ws_chunks(body, chunk_queue)
+            if self.use_websocket and self.model_id == "coda"
+            else self.get_chunks(headers, body, chunk_size, chunk_queue),
         )
 
         return SynthesisResult(
@@ -121,12 +130,53 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         finally:
             chunk_queue.put_nowait(None)  # treated as sentinel
 
+    async def get_ws_chunks(self, body: dict, chunk_queue: asyncio.Queue):
+        context_id = str(uuid.uuid4())
+        try:
+            async with websockets.connect(
+                RIME_WS_URL,
+                subprotocols=[RIME_WS_SUBPROTOCOL],
+                additional_headers={"Authorization": self.api_key},
+            ) as ws:
+                await ws.recv()
+                await ws.send(
+                    json.dumps(
+                        {
+                            "contextId": context_id,
+                            "start": {
+                                "speaker": body["speaker"],
+                                "language": "en",
+                                "text": "",
+                                "audioParameters": {
+                                    **RIME_WS_AUDIO_PARAMETERS,
+                                    "timeScaleFactor": 1 / (body.get("speedAlpha") or 1),
+                                },
+                            },
+                        }
+                    )
+                )
+                await ws.send(json.dumps({"contextId": context_id, "text": body["text"]}))
+                await ws.send(json.dumps({"contextId": context_id, "end": {}}))
+                while True:
+                    message = json.loads(await ws.recv())
+                    if "audio" in message:
+                        chunk_queue.put_nowait(base64.b64decode(message["audio"]))
+                        continue
+                    if "error" in message:
+                        raise RimeError(f"Rime websocket error: {message['error']}")
+                    if "done" in message or "cancelled" in message:
+                        break
+        except asyncio.CancelledError:
+            pass
+        finally:
+            chunk_queue.put_nowait(None)
+
     def get_request_body(self, text):
         speed_alpha = self.speed_alpha if self.speed_alpha else RIME_DEFAULT_SPEED_ALPHA
         reduce_latency = self.reduce_latency if self.reduce_latency else RIME_DEFAULT_REDUCE_LATENCY
 
         body = {
-            "text": text,
+            "text": strip_non_speech(text),
             "speaker": self.speaker,
             "samplingRate": self.sampling_rate,
             "speedAlpha": speed_alpha,
