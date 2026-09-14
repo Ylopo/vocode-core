@@ -3,10 +3,14 @@ import audioop
 import base64
 import io
 import json
+import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import aiohttp
 from loguru import logger
+
+from app import call_id as ctx_call_id
 
 from vocode import getenv
 from vocode.streaming.models.audio import AudioEncoding
@@ -39,7 +43,13 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
 
         self.base_url = synthesizer_config.base_url
         self.model_id = synthesizer_config.model_id
-        self.speaker = synthesizer_config.speaker
+        speaker, _, suffix = synthesizer_config.speaker.rpartition("-")
+        try:
+            self.cache_speed_alpha = float(suffix)
+            self.speaker = speaker
+        except ValueError:
+            self.cache_speed_alpha = None
+            self.speaker = synthesizer_config.speaker
         self.speed_alpha = synthesizer_config.speed_alpha
         self.sampling_rate = synthesizer_config.sampling_rate
         self.reduce_latency = synthesizer_config.reduce_latency
@@ -98,6 +108,22 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         chunk_size: int,
         chunk_queue: asyncio.Queue[Optional[bytes]],
     ):
+        call_id = str(ctx_call_id.value) if ctx_call_id.value else None
+        logger.info(
+            "Rime request: "
+            + json.dumps(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "url": self.base_url,
+                    "body": body,
+                    "call_id": call_id,
+                },
+                ensure_ascii=False,
+            )
+        )
+        started_at = time.monotonic()
+        total_bytes = 0
+        first_chunk_at = None
         try:
             async_client = self.async_requestor.get_client()
             stream = await async_client.send(
@@ -111,11 +137,47 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             )
             if not stream.is_success:
                 error = await stream.aread()
+                text = error.decode("utf-8", "replace")
+                try:
+                    detail = json.loads(text)
+                except ValueError:
+                    detail = text.strip()
+                logger.error(
+                    "Rime response error: "
+                    + json.dumps(
+                        {
+                            "status": stream.status_code,
+                            "content_type": stream.headers.get("content-type", ""),
+                            "error": detail,
+                            "call_id": call_id,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
                 raise RimeError(
-                    f"Rime API returned {stream.status_code} status code with the following details: {error.decode('utf-8')}"
+                    f"Rime API returned {stream.status_code} status code with the following details: {text}"
                 )
             async for chunk in stream.aiter_bytes(chunk_size):
+                if first_chunk_at is None:
+                    first_chunk_at = time.monotonic()
+                total_bytes += len(chunk)
                 chunk_queue.put_nowait(chunk)
+            logger.info(
+                "Rime response: "
+                + json.dumps(
+                    {
+                        "status": stream.status_code,
+                        "headers": dict(stream.headers),
+                        "total_bytes": total_bytes,
+                        "ttfb_ms": (
+                            round((first_chunk_at - started_at) * 1000) if first_chunk_at else None
+                        ),
+                        "ttlb_ms": round((time.monotonic() - started_at) * 1000),
+                        "call_id": call_id,
+                    },
+                    ensure_ascii=False,
+                )
+            )
         except asyncio.CancelledError:
             pass
         finally:
