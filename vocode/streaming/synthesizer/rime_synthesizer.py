@@ -280,6 +280,9 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
     async def handle_end_of_turn(self):
         await self._ws_close_context("end")
 
+    async def handle_interrupt(self):
+        await self._ws_close_context("cancel")
+
     @staticmethod
     async def _no_audio():
         return

@@ -856,6 +856,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.output_device.interrupt()
             self.agent.cancel_current_task()
             self.agent_responses_worker.cancel_current_task()
+            self.agent_responses_worker.is_first_text_chunk = True
+            interrupt_handler = getattr(self.synthesizer, "handle_interrupt", None)
+            if interrupt_handler is not None:
+                await interrupt_handler()
             if self.actions_worker:
                 self.actions_worker.cancel_current_task()
             return num_interrupts > 0
