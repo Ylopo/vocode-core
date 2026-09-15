@@ -565,15 +565,12 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 assert synthesis_result is not None
                 # create an empty transcript message and attach it to the transcript
                 transcript_message = Message(
-                    text=(
-                        message.text
-                        if getattr(synthesis_result, "transcript_text_at_creation", False)
-                        else ""
-                    ),
+                    text="",
                     sender=Sender.BOT,
                     is_backchannel=isinstance(message, BotBackchannel),
                 )
-                if not isinstance(message, SilenceMessage):
+                skip_transcript = getattr(synthesis_result, "skip_transcript", False)
+                if not isinstance(message, SilenceMessage) and not skip_transcript:
                     self.conversation.transcript.add_message(
                         message=transcript_message,
                         conversation_id=self.conversation.id,

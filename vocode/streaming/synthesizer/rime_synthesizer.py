@@ -64,6 +64,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         self._ws = None
         self._ws_context_id = None
         self._ws_queue = None
+        self._ws_turn_text = ""
         self._ws_reader = None
         self._ws_chunk_size = None
         self.speed_alpha = synthesizer_config.speed_alpha
@@ -352,6 +353,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             await self._ws_stop_reader()
             self._ws_context_id = str(uuid.uuid4())
             self._ws_queue = asyncio.Queue()
+            self._ws_turn_text = ""
             self._ws_chunk_size = chunk_size
             start = {
                 "speaker": self.speaker,
@@ -388,15 +390,30 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             json.dumps({"contextId": self._ws_context_id, "text": body["text"]})
         )
 
+        self._ws_turn_text = (
+            f"{self._ws_turn_text} {body['text']}".strip()
+            if self._ws_turn_text
+            else body["text"].strip()
+        )
+
         if not is_first_text_chunk:
-            # This sentence is spoken as part of the first one's audio, so there is no
-            # playback of its own to derive the transcript text from.
-            result = SynthesisResult(self._no_audio(), lambda seconds: message.text)
-            result.transcript_text_at_creation = True
+            # Spoken as part of the first sentence's audio, so it has no playback of its
+            # own and must not add a transcript entry of its own either.
+            result = SynthesisResult(self._no_audio(), lambda seconds: "")
+            result.skip_transcript = True
             return result
+
+        # This result carries the whole turn, so its cutoff is measured against the whole
+        # turn's text - that is what the caller heard, and what the agent reads back.
+        turn_message = message
+
+        def get_turn_text_up_to(seconds):
+            turn_message.text = self._ws_turn_text
+            return self.get_message_cutoff_from_voice_speed(turn_message, seconds, 150)
+
         return SynthesisResult(
             self.chunk_result_generator_from_queue(self._ws_queue),
-            lambda seconds: self.get_message_cutoff_from_voice_speed(message, seconds, 150),
+            get_turn_text_up_to,
         )
 
     def get_request_body(self, text):
