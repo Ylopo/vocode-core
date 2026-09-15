@@ -440,8 +440,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
                 if isinstance(agent_response_message.message, EndOfTurn):
                     logger.debug("Sending end of turn")
-                    if isinstance(self.conversation.synthesizer, InputStreamingSynthesizer):
-                        await self.conversation.synthesizer.handle_end_of_turn()
+                    end_of_turn_handler = getattr(
+                        self.conversation.synthesizer, "handle_end_of_turn", None
+                    )
+                    if end_of_turn_handler is not None:
+                        await end_of_turn_handler()
                     self.consumer.consume_nonblocking(
                         self.interruptible_event_factory.create_interruptible_agent_response_event(
                             (agent_response_message.message, None),
