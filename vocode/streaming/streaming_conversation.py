@@ -565,7 +565,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 assert synthesis_result is not None
                 # create an empty transcript message and attach it to the transcript
                 transcript_message = Message(
-                    text="",
+                    text=(
+                        message.text
+                        if getattr(synthesis_result, "transcript_text_at_creation", False)
+                        else ""
+                    ),
                     sender=Sender.BOT,
                     is_backchannel=isinstance(message, BotBackchannel),
                 )

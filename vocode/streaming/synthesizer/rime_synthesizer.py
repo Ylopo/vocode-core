@@ -23,7 +23,6 @@ from vocode.streaming.models.synthesizer import (
     RimeSynthesizerConfig,
 )
 from vocode.streaming.synthesizer.base_synthesizer import BaseSynthesizer, SynthesisResult
-from vocode.streaming.utils import get_chunk_size_per_second
 from vocode.streaming.utils.create_task import asyncio_create_task
 
 # TODO: [OSS] Remove call to internal library with Synthesizers refactor
@@ -35,10 +34,6 @@ WAV_HEADER_LENGTH = 44
 RIME_WS_URL = "wss://api.rime.ai/coda/ws"
 RIME_WS_SUBPROTOCOL = "rime.v1.json"
 RIME_WS_AUDIO_FORMAT = "audio/PCMU"
-# Deliberately faster than the ~194 wpm coda actually produces, so a sentence's
-# budget runs out early and the remainder flows into the next one. Under-running
-# keeps the audio continuous; over-running would starve the last sentence.
-RIME_WS_BUDGET_WPM = 220
 
 
 class RimeError(Exception):
@@ -68,8 +63,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         self.ws_one_shot = False
         self._ws = None
         self._ws_context_id = None
-        self._ws_sentences = []
-        self._ws_emitted = 0
+        self._ws_queue = None
         self._ws_reader = None
         self._ws_chunk_size = None
         self.speed_alpha = synthesizer_config.speed_alpha
@@ -216,17 +210,6 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         await self._ws.recv()
         return self._ws
 
-    def _expected_bytes(self, text: str) -> int:
-        """Roughly how many bytes of audio this text will produce, at 150 wpm
-        adjusted for voice speed. Used to close one sentence's queue and move to
-        the next without waiting for a boundary the endpoint does not provide."""
-        words = max(1, len(text.split()))
-        speed = self.speed_alpha or RIME_DEFAULT_SPEED_ALPHA
-        seconds = (words / (RIME_WS_BUDGET_WPM / 60)) / speed
-        return int(seconds * get_chunk_size_per_second(
-            self.synthesizer_config.audio_encoding, self.sampling_rate
-        ))
-
     async def _ws_read(self, context_id: str, chunk_queue: asyncio.Queue, chunk_size: int):
         started_at = time.monotonic()
         total_bytes = 0
@@ -244,7 +227,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
                     total_bytes += len(decoded)
                     buffer += decoded
                     while len(buffer) >= chunk_size:
-                        self._ws_emit(buffer[:chunk_size])
+                        chunk_queue.put_nowait(buffer[:chunk_size])
                         buffer = buffer[chunk_size:]
                     continue
                 if "error" in message:
@@ -257,7 +240,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
                 if "done" in message or "cancelled" in message:
                     break
             if buffer:
-                self._ws_emit(buffer)
+                chunk_queue.put_nowait(buffer)
             logger.info(
                 "Rime response: "
                 + json.dumps(
@@ -278,26 +261,12 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         except Exception as e:
             logger.error(f"Rime websocket reader failed: {e}")
         finally:
-            self._ws_close_all_queues()
+            chunk_queue.put_nowait(None)
 
-    def _ws_emit(self, chunk: bytes):
-        """Push a chunk to the sentence currently being played, advancing once that
-        sentence has had roughly the audio its text is worth."""
-        while self._ws_sentences:
-            queue, budget = self._ws_sentences[0]
-            if self._ws_emitted < budget or len(self._ws_sentences) == 1:
-                queue.put_nowait(chunk)
-                self._ws_emitted += len(chunk)
-                return
-            queue.put_nowait(None)
-            self._ws_sentences.pop(0)
-            self._ws_emitted = 0
-
-    def _ws_close_all_queues(self):
-        for queue, _ in self._ws_sentences:
-            queue.put_nowait(None)
-        self._ws_sentences = []
-        self._ws_emitted = 0
+    @staticmethod
+    async def _no_audio():
+        return
+        yield
 
     async def _ws_stop_reader(self):
         """Only one coroutine may wait on the socket, so the previous reader has to
@@ -324,13 +293,13 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         if operation == "cancel":
             await self._ws_stop_reader()
         self._ws_context_id = None
-        self._ws_reader = None
 
     async def handle_end_of_turn(self):
         await self._ws_close_context("end")
 
     async def handle_interrupt(self):
         await self._ws_close_context("cancel")
+        await self._ws_stop_reader()
 
     async def create_speech_ws(
         self, message: BaseMessage, chunk_size: int, is_first_text_chunk: bool
@@ -371,9 +340,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             await self._ws.send(json.dumps({"contextId": context_id, "start": start}))
             await self._ws.send(json.dumps({"contextId": context_id, "text": body["text"]}))
             await self._ws.send(json.dumps({"contextId": context_id, "end": {}}))
-            self._ws_sentences = [(queue, self._expected_bytes(body["text"]))]
-            self._ws_emitted = 0
-            asyncio_create_task(self._ws_read(context_id, None, chunk_size))
+            asyncio_create_task(self._ws_read(context_id, queue, chunk_size))
             return SynthesisResult(
                 self.chunk_result_generator_from_queue(queue),
                 lambda seconds: self.get_message_cutoff_from_voice_speed(message, seconds, 150),
@@ -384,8 +351,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
                 await self._ws_close_context("cancel")
             await self._ws_stop_reader()
             self._ws_context_id = str(uuid.uuid4())
-            self._ws_sentences = []
-            self._ws_emitted = 0
+            self._ws_queue = asyncio.Queue()
             self._ws_chunk_size = chunk_size
             start = {
                 "speaker": self.speaker,
@@ -401,7 +367,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
                 json.dumps({"contextId": self._ws_context_id, "start": start})
             )
             self._ws_reader = asyncio_create_task(
-                self._ws_read(self._ws_context_id, None, chunk_size)
+                self._ws_read(self._ws_context_id, self._ws_queue, chunk_size)
             )
 
         logger.info(
@@ -422,10 +388,14 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             json.dumps({"contextId": self._ws_context_id, "text": body["text"]})
         )
 
-        queue: asyncio.Queue = asyncio.Queue()
-        self._ws_sentences.append((queue, self._expected_bytes(body["text"])))
+        if not is_first_text_chunk:
+            # This sentence is spoken as part of the first one's audio, so there is no
+            # playback of its own to derive the transcript text from.
+            result = SynthesisResult(self._no_audio(), lambda seconds: message.text)
+            result.transcript_text_at_creation = True
+            return result
         return SynthesisResult(
-            self.chunk_result_generator_from_queue(queue),
+            self.chunk_result_generator_from_queue(self._ws_queue),
             lambda seconds: self.get_message_cutoff_from_voice_speed(message, seconds, 150),
         )
 
