@@ -299,6 +299,19 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         self._ws_sentences = []
         self._ws_emitted = 0
 
+    async def _ws_stop_reader(self):
+        """Only one coroutine may wait on the socket, so the previous reader has to
+        be finished before another starts."""
+        reader = self._ws_reader
+        self._ws_reader = None
+        if reader is None or reader.done():
+            return
+        reader.cancel()
+        try:
+            await reader
+        except (asyncio.CancelledError, Exception):
+            pass
+
     async def _ws_close_context(self, operation: str):
         if self._ws_context_id is None:
             return
@@ -308,8 +321,8 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             )
         except Exception as e:
             logger.error(f"Rime websocket {operation} failed: {e}")
-        if operation == "cancel" and self._ws_reader is not None:
-            self._ws_reader.cancel()
+        if operation == "cancel":
+            await self._ws_stop_reader()
         self._ws_context_id = None
         self._ws_reader = None
 
@@ -369,6 +382,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
         if is_first_text_chunk or self._ws_context_id is None:
             if self._ws_context_id is not None:
                 await self._ws_close_context("cancel")
+            await self._ws_stop_reader()
             self._ws_context_id = str(uuid.uuid4())
             self._ws_sentences = []
             self._ws_emitted = 0
