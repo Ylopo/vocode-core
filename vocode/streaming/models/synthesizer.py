@@ -151,6 +151,7 @@ class RimeSynthesizerConfig(SynthesizerConfig, type=SynthesizerType.RIME.value):
     model_id: Optional[Literal[RimeModelId]] = RIME_DEFAULT_MODEL_ID
     speaker: str = RIME_DEFAULT_SPEAKER
     speed_alpha: Optional[float] = RIME_DEFAULT_SPEED_ALPHA
+    cache_speed_alpha: Optional[float] = None
     sampling_rate: int = RIME_DEFAULT_SAMPLE_RATE
     reduce_latency: Optional[bool] = RIME_DEFAULT_REDUCE_LATENCY
 
