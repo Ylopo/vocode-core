@@ -121,7 +121,11 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
     def get_audio_parameters(self) -> dict:
         speed_alpha = self.speed_alpha if self.speed_alpha else RIME_DEFAULT_SPEED_ALPHA
         # Coda scales duration rather than rate, so it is the reciprocal of speedAlpha.
-        return {"audioFormat": "audio/PCMU", "timeScaleFactor": 1 / speed_alpha}
+        return {
+            "audioFormat": "audio/PCMU",
+            "samplingRate": self.sampling_rate,
+            "timeScaleFactor": 1 / speed_alpha,
+        }
 
     async def start_context(self, context_id: str, text: str = ""):
         await self.send_operation(
