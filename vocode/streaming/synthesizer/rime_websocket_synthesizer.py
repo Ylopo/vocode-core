@@ -96,6 +96,8 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         self.listener: Optional[asyncio.Task] = None
         self.connect_lock = asyncio.Lock()
         self.connection_id: Optional[str] = None
+        self.connection_opened_at: Optional[float] = None
+        self.contexts_served = 0
         self.context_queues: dict[str, asyncio.Queue] = {}
         self.context_stats: dict[str, dict] = {}
 
@@ -166,8 +168,9 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
                 and not self.listener.done()
             ):
                 return
-            opened_at = time.monotonic()
+            self.connection_opened_at = opened_at = time.monotonic()
             self.connection_id = str(uuid.uuid4())
+            self.contexts_served = 0
             self.websocket = await websockets.connect(
                 RIME_CODA_WS_URL,
                 extra_headers={"Authorization": self.api_key},
@@ -192,6 +195,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
     def register_context(
         self, context_id: str, queue: asyncio.Queue, mode: str, chunk_size: int = 0
     ):
+        self.contexts_served += 1
         self.context_queues[context_id] = queue
         self.context_stats[context_id] = {
             "started_at": time.monotonic(),
@@ -277,7 +281,18 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Rime websocket listener terminated: {e}")
+            self.log_event(
+                "disconnected",
+                {
+                    "at": now_iso(),
+                    "connection_id": self.connection_id,
+                    "reason": "listener terminated",
+                    "error": str(e),
+                    "open_ms": self.connection_open_ms(),
+                    "contexts_served": self.contexts_served,
+                    "contexts_in_flight": len(self.context_queues),
+                },
+            )
             for queue in self.context_queues.values():
                 queue.put_nowait(None)
 
@@ -445,14 +460,31 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
     async def cancel_websocket_tasks(self):
         await self.handle_interrupt()
 
+    def connection_open_ms(self) -> Optional[int]:
+        if self.connection_opened_at is None:
+            return None
+        return round((time.monotonic() - self.connection_opened_at) * 1000)
+
     async def tear_down(self):
         await self.cancel_websocket_tasks()
         if self.listener is not None:
             self.listener.cancel()
             self.listener = None
         if self.websocket is not None:
+            self.log_event(
+                "disconnected",
+                {
+                    "at": now_iso(),
+                    "connection_id": self.connection_id,
+                    "reason": "torn down",
+                    "open_ms": self.connection_open_ms(),
+                    "contexts_served": self.contexts_served,
+                    "contexts_in_flight": len(self.context_queues),
+                },
+            )
             await self.websocket.close()
             self.websocket = None
+        self.connection_opened_at = None
         self.context_queues.clear()
         self.context_stats.clear()
         await super().tear_down()
