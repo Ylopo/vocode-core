@@ -853,6 +853,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.output_device.interrupt()
             self.agent.cancel_current_task()
             self.agent_responses_worker.cancel_current_task()
+            # EndOfTurn never arrives on an interrupted turn, so the flag it would have
+            # reset is restored here; without it every later turn synthesizes no audio.
+            self.agent_responses_worker.is_first_text_chunk = True
+            if isinstance(self.synthesizer, InputStreamingSynthesizer):
+                await self.synthesizer.handle_interrupt()
             if self.actions_worker:
                 self.actions_worker.cancel_current_task()
             return num_interrupts > 0
