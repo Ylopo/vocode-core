@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import time
 import uuid
 from typing import Optional
 
@@ -59,6 +60,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         self.listener: Optional[asyncio.Task] = None
         self.connect_lock = asyncio.Lock()
         self.context_queues: dict[str, asyncio.Queue] = {}
+        self.context_stats: dict[str, dict] = {}
 
         self.turn_context_id: Optional[str] = None
         self.turn_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
@@ -89,23 +91,99 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             if "ready" not in ready:
                 raise RimeWebsocketError(f"Expected a ready frame from Rime, received {ready}")
             self.listener = asyncio_create_task(self.listen())
+            logger.info(f"Rime websocket connected: {json.dumps(ready)}")
+
+    def register_context(
+        self, context_id: str, queue: asyncio.Queue, one_shot: bool, chunk_size: int = 0
+    ):
+        self.context_queues[context_id] = queue
+        self.context_stats[context_id] = {
+            "started_at": time.monotonic(),
+            "first_audio_at": None,
+            "frames": 0,
+            "bytes": 0,
+            "one_shot": one_shot,
+            "chunk_size": chunk_size,
+            "buffer": bytearray(),
+        }
+
+    def log_context_result(self, context_id: str, outcome: str):
+        stats = self.context_stats.pop(context_id, None)
+        if stats is None:
+            return
+        first_audio_at = stats["first_audio_at"]
+        logger.info(
+            "Rime response: "
+            + json.dumps(
+                {
+                    "context_id": context_id,
+                    "outcome": outcome,
+                    "one_shot": stats["one_shot"],
+                    "frames": stats["frames"],
+                    "bytes": stats["bytes"],
+                    "ttfb_ms": (
+                        round((first_audio_at - stats["started_at"]) * 1000)
+                        if first_audio_at
+                        else None
+                    ),
+                    "ttlb_ms": round((time.monotonic() - stats["started_at"]) * 1000),
+                },
+                ensure_ascii=False,
+            )
+        )
 
     async def listen(self):
         try:
             async for raw in self.websocket:
                 frame = json.loads(raw)
-                queue = self.context_queues.get(frame.get("contextId"))
+                context_id = frame.get("contextId")
+                if "started" in frame:
+                    logger.info(
+                        "Rime started: "
+                        + json.dumps(
+                            {"context_id": context_id, "started": frame["started"]},
+                            ensure_ascii=False,
+                        )
+                    )
+                queue = self.context_queues.get(context_id)
                 if queue is None:
                     continue
+                stats = self.context_stats.get(context_id)
                 if "audio" in frame:
                     audio = base64.b64decode(frame["audio"])
-                    if frame.get("contextId") == self.turn_context_id:
-                        self.turn_audio_bytes += len(audio)
-                    queue.put_nowait(audio)
+                    if stats is None or stats["one_shot"]:
+                        # Cached audio is accumulated into one blob and re-chunked on
+                        # playback, so it can be queued exactly as it arrives.
+                        queue.put_nowait(audio)
+                        continue
+                    if stats["first_audio_at"] is None:
+                        stats["first_audio_at"] = time.monotonic()
+                    stats["frames"] += 1
+                    stats["bytes"] += len(audio)
+                    self.turn_audio_bytes += len(audio)
+                    # Live audio goes straight to the output device, which expects fixed
+                    # size frames; Rime's are whatever the model happened to emit.
+                    buffer, chunk_size = stats["buffer"], stats["chunk_size"]
+                    buffer.extend(audio)
+                    while chunk_size > 0 and len(buffer) >= chunk_size:
+                        queue.put_nowait(bytes(buffer[:chunk_size]))
+                        del buffer[:chunk_size]
                 elif "error" in frame:
-                    logger.error(f"Rime websocket returned an error: {frame['error']}")
+                    logger.error(
+                        "Rime error: "
+                        + json.dumps(
+                            {"context_id": context_id, "error": frame["error"]}, ensure_ascii=False
+                        )
+                    )
+                    self.log_context_result(context_id, "error")
                     queue.put_nowait(None)
                 elif "done" in frame or "cancelled" in frame:
+                    if stats is not None and stats["buffer"]:
+                        queue.put_nowait(bytes(stats["buffer"]))
+                        stats["buffer"].clear()
+                    self.log_context_result(
+                        context_id, "cancelled" if "cancelled" in frame else "done"
+                    )
                     queue.put_nowait(None)
         except asyncio.CancelledError:
             pass
@@ -116,6 +194,18 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
 
     async def send_operation(self, payload: dict):
         assert self.websocket is not None, "Rime websocket is not connected"
+        operation = next((key for key in payload if key != "contextId"), "unknown")
+        logger.info(
+            "Rime request: "
+            + json.dumps(
+                {
+                    "context_id": payload.get("contextId"),
+                    "operation": operation,
+                    "detail": payload[operation],
+                },
+                ensure_ascii=False,
+            )
+        )
         await self.websocket.send(json.dumps(payload))
 
     def get_audio_parameters(self) -> dict:
@@ -146,6 +236,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
                 yield chunk_result
         finally:
             self.context_queues.pop(context_id, None)
+            self.context_stats.pop(context_id, None)
 
     # --- cached path: one context per message -----------------------------------------
 
@@ -161,7 +252,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
 
         context_id = str(uuid.uuid4())
         queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
-        self.context_queues[context_id] = queue
+        self.register_context(context_id, queue, one_shot=True)
 
         await self.start_context(context_id)
         await self.send_operation({"contextId": context_id, "text": message.text})
@@ -186,7 +277,9 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             self.turn_text_buffer = ""
             self.turn_text_sent = ""
             self.turn_audio_bytes = 0
-            self.context_queues[self.turn_context_id] = self.turn_queue
+            self.register_context(
+                self.turn_context_id, self.turn_queue, one_shot=False, chunk_size=chunk_size
+            )
             await self.start_context(self.turn_context_id)
 
         self.turn_text_buffer += message.text
@@ -239,6 +332,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         queue = self.context_queues.pop(context_id, None)
         if queue is not None:
             queue.put_nowait(None)
+        self.log_context_result(context_id, "interrupted")
         try:
             await self.send_operation({"contextId": context_id, "cancel": {}})
         except Exception as e:
@@ -256,4 +350,5 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             await self.websocket.close()
             self.websocket = None
         self.context_queues.clear()
+        self.context_stats.clear()
         await super().tear_down()
