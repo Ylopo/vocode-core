@@ -473,19 +473,22 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         )
 
     def get_current_message_so_far(self, seconds: Optional[float]) -> str:
-        # Normalised as a whole: the sent half already is, the unflushed tail is not, and
-        # this string is the transcript as well as the basis for the cutoff arithmetic.
-        text = WHITESPACE_RUN.sub(" ", self.turn_text_sent + self.turn_text_buffer).strip()
+        # Only text Rime was actually sent can have been heard. The unflushed tail never
+        # reached the model, so it is no part of the turn as far as the caller - or the
+        # agent's own history, which this string becomes - is concerned. Collapsed to
+        # single spaces so the transcript reads as it does on the HTTP path.
+        text = WHITESPACE_RUN.sub(" ", self.turn_text_sent).strip()
         if seconds is None or not text:
             return text
-        # Coda carries no word timings yet, so the elapsed text is derived from the audio
-        # actually received rather than from an assumed words-per-minute rate.
-        if not self.turn_audio_bytes:
-            return BaseSynthesizer.get_message_cutoff_from_voice_speed(
-                BaseMessage(text=text), seconds, 150
-            )
-        seconds_per_char = (self.turn_audio_bytes / self.sampling_rate) / len(text)
-        return snap_to_word_boundary(text, int(seconds / seconds_per_char))
+        # Mulaw arrives at a fixed byte per sample, so the audio that has come back is
+        # its own clock: its length in seconds is the length of the speech. How far
+        # playback got through it is the proportion of the text that was heard, and no
+        # assumed speaking rate comes into it.
+        audio_seconds = self.turn_audio_bytes / self.sampling_rate
+        if not audio_seconds:
+            return ""
+        heard = min(seconds / audio_seconds, 1.0)
+        return snap_to_word_boundary(text, int(len(text) * heard))
 
     async def handle_end_of_turn(self):
         if self.turn_context_id is None:
