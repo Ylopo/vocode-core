@@ -20,11 +20,16 @@ from vocode.streaming.utils.create_task import asyncio_create_task
 
 RIME_CODA_WS_URL = "wss://api.rime.ai/coda/ws"
 RIME_CODA_SUBPROTOCOL = "rime.v1.json"
+RIME_LOGGED_HEADERS = {"Authorization": "Bearer ***REDACTED***"}
 
-MODE_CACHED = "cached"
-MODE_LIVE = "live"
+# A context is either a single self-contained message or a whole agent turn. It says
+# nothing about where the audio ends up: a one-shot context feeds the pre-call cache,
+# but mid-call it feeds the output device directly.
+MODE_ONESHOT = "oneshot"
+MODE_STREAM = "stream"
 
 SENTENCE_BOUNDARY = re.compile(r"([.!?])(\s+)")
+WHITESPACE_RUN = re.compile(r"\s+")
 
 
 class RimeWebsocketError(Exception):
@@ -75,6 +80,10 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def short_id(identifier: Optional[str]) -> str:
+    return identifier.split("-")[0] if identifier else "-"
+
+
 class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStreamingSynthesizer):
     """Coda websocket synthesizer.
 
@@ -97,6 +106,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         self.connect_lock = asyncio.Lock()
         self.connection_id: Optional[str] = None
         self.connection_opened_at: Optional[float] = None
+        self.connection_opened_iso: Optional[str] = None
         self.contexts_served = 0
         self.context_queues: dict[str, asyncio.Queue] = {}
         self.context_stats: dict[str, dict] = {}
@@ -113,20 +123,54 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
 
     # --- logging ----------------------------------------------------------------------
     #
-    # Every frame exchanged with Rime is logged verbatim except audio, which is counted
-    # rather than printed: a single turn carries a few hundred audio frames, and logging
-    # each one would cost more than the synthesis it is describing. What audio would have
-    # told us - arrival time, count, total size and framing - is captured on the context
-    # summary instead.
+    # One JSON block per context, not a line per frame. The exchange is accumulated as it
+    # happens and emitted once when the context closes, so a whole message reads as a
+    # single object rather than as a dozen lines interleaved with every other context on
+    # the connection. Audio frames are counted rather than recorded - a turn carries a few
+    # hundred - and what they would have told us, arrival time, count, total size and
+    # framing, is on the summary instead.
 
-    def log_event(self, event: str, payload: dict):
-        logger.info(f"Rime {event}: " + json.dumps(payload, ensure_ascii=False, default=str))
+    def log_block(self, kind: str, summary: str, block: dict):
+        # Bound rather than formatted into the message: the json sink serializes `extra`
+        # as nested json, so the block arrives in the log as an object that expands and
+        # can be queried by field, instead of one long escaped string. The summary line
+        # carries the same story in one line, which is all a pretty sink would show.
+        logger.bind(rime={"kind": kind, **block}).info(f"Rime {kind} {summary}")
 
-    def context_elapsed_ms(self, context_id: Optional[str]) -> Optional[int]:
-        stats = self.context_stats.get(context_id) if context_id else None
+    def connection_block(self) -> dict:
+        return {
+            "id": self.connection_id,
+            "opened_at": self.connection_opened_iso,
+            "url": RIME_CODA_WS_URL,
+            "subprotocol": RIME_CODA_SUBPROTOCOL,
+            "headers": RIME_LOGGED_HEADERS,
+        }
+
+    def record(self, stats: Optional[dict], direction: str, frame: dict):
+        """Append every operation in a frame to its context's exchange, audio excepted."""
         if stats is None:
-            return None
-        return round((time.monotonic() - stats["started_at"]) * 1000)
+            return
+        at_ms = round((time.monotonic() - stats["started_at"]) * 1000)
+        for op, payload in frame.items():
+            if op != "contextId":
+                stats["exchange"].append(
+                    {"at_ms": at_ms, "dir": direction, "op": op, "payload": payload}
+                )
+
+    def log_orphan(self, direction: str, frame: dict):
+        # A frame for a context that is already closed, or was never registered. It has
+        # no block to belong to, and dropping it would hide the fault that produced it.
+        context_id = frame.get("contextId")
+        self.log_block(
+            "orphan",
+            f"{direction} {short_id(context_id)}",
+            {
+                "connection": self.connection_block(),
+                "context_id": context_id,
+                "dir": direction,
+                "frame": frame,
+            },
+        )
 
     def log_context_result(self, context_id: str, outcome: str):
         stats = self.context_stats.pop(context_id, None)
@@ -134,29 +178,60 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             return
         sizes = stats["frame_sizes"]
         first_audio_at = stats["first_audio_at"]
-        self.log_event(
+        seconds = round(stats["bytes"] / self.sampling_rate, 3)
+        ttfb_ms = round((first_audio_at - stats["started_at"]) * 1000) if first_audio_at else None
+        ttlb_ms = round((time.monotonic() - stats["started_at"]) * 1000)
+        self.log_block(
             "context",
+            f"{short_id(context_id)} | {stats['mode']} | {outcome} | {seconds}s audio | "
+            f"ttfb {f'{ttfb_ms}ms' if ttfb_ms is not None else 'none'} | ttlb {ttlb_ms}ms",
             {
-                "at": now_iso(),
-                "connection_id": self.connection_id,
                 "context_id": context_id,
                 "mode": stats["mode"],
                 "outcome": outcome,
+                "started_at": stats["started_iso"],
+                "connection": self.connection_block(),
                 "speaker": self.speaker,
                 "audio_parameters": stats["audio_parameters"],
                 "text": stats["text"],
                 "text_frames": stats["text_frames"],
-                "audio_frames": stats["frames"],
-                "audio_bytes": stats["bytes"],
-                "audio_seconds": round(stats["bytes"] / self.sampling_rate, 3),
-                "frame_bytes_min": min(sizes) if sizes else None,
-                "frame_bytes_max": max(sizes) if sizes else None,
-                "ttfb_ms": (
-                    round((first_audio_at - stats["started_at"]) * 1000) if first_audio_at else None
-                ),
-                "ttlb_ms": round((time.monotonic() - stats["started_at"]) * 1000),
+                "audio": {
+                    "frames": stats["frames"],
+                    "bytes": stats["bytes"],
+                    "seconds": seconds,
+                    "frame_bytes": {
+                        "min": min(sizes) if sizes else None,
+                        "max": max(sizes) if sizes else None,
+                    },
+                },
+                "timing": {"ttfb_ms": ttfb_ms, "ttlb_ms": ttlb_ms},
+                "exchange": stats["exchange"],
             },
         )
+
+    def log_disconnected(self, reason: str, error: Optional[str] = None):
+        open_ms = self.connection_open_ms()
+        in_flight = len(self.context_queues)
+        self.log_block(
+            "disconnected",
+            f"{short_id(self.connection_id)} | {reason} | open {open_ms}ms | "
+            f"{self.contexts_served} contexts | {in_flight} in flight",
+            {
+                "reason": reason,
+                "error": error,
+                "connection": self.connection_block(),
+                "open_ms": open_ms,
+                "contexts_served": self.contexts_served,
+                "contexts_in_flight": in_flight,
+            },
+        )
+        self.log_abandoned_contexts()
+
+    def log_abandoned_contexts(self):
+        # A context only emits its block when it closes, so one that never closed would
+        # otherwise leave no trace at all - which is exactly the case worth seeing.
+        for context_id in list(self.context_stats):
+            self.log_context_result(context_id, "abandoned")
 
     # --- connection ------------------------------------------------------------------
 
@@ -169,6 +244,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             ):
                 return
             self.connection_opened_at = opened_at = time.monotonic()
+            self.connection_opened_iso = now_iso()
             self.connection_id = str(uuid.uuid4())
             self.contexts_served = 0
             self.websocket = await websockets.connect(
@@ -180,14 +256,13 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             if "ready" not in ready:
                 raise RimeWebsocketError(f"Expected a ready frame from Rime, received {ready}")
             self.listener = asyncio_create_task(self.listen())
-            self.log_event(
+            handshake_ms = round((time.monotonic() - opened_at) * 1000)
+            self.log_block(
                 "connected",
+                f"{short_id(self.connection_id)} | handshake {handshake_ms}ms",
                 {
-                    "at": now_iso(),
-                    "connection_id": self.connection_id,
-                    "url": RIME_CODA_WS_URL,
-                    "subprotocol": RIME_CODA_SUBPROTOCOL,
-                    "handshake_ms": round((time.monotonic() - opened_at) * 1000),
+                    "connection": self.connection_block(),
+                    "handshake_ms": handshake_ms,
                     "frame": ready,
                 },
             )
@@ -199,6 +274,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         self.context_queues[context_id] = queue
         self.context_stats[context_id] = {
             "started_at": time.monotonic(),
+            "started_iso": now_iso(),
             "first_audio_at": None,
             "frames": 0,
             "bytes": 0,
@@ -209,6 +285,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             "chunk_size": chunk_size,
             "buffer": bytearray(),
             "audio_parameters": None,
+            "exchange": [],
         }
 
     async def listen(self):
@@ -224,29 +301,21 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
                     if stats is not None:
                         if stats["first_audio_at"] is None:
                             stats["first_audio_at"] = time.monotonic()
-                            self.log_event(
-                                "<< first audio",
-                                {
-                                    "at": now_iso(),
-                                    "context_id": context_id,
-                                    "mode": stats["mode"],
-                                    "bytes": len(audio),
-                                    "ttfb_ms": self.context_elapsed_ms(context_id),
-                                },
-                            )
+                            self.record(stats, "<<", {"audio": {"first frame bytes": len(audio)}})
                         stats["frames"] += 1
                         stats["bytes"] += len(audio)
                         stats["frame_sizes"].append(len(audio))
                     if queue is None:
                         continue
-                    if stats is None or stats["mode"] == MODE_CACHED:
-                        # Cached audio is accumulated into one blob and re-chunked when it
-                        # is played back, so it can be queued exactly as it arrives.
+                    if stats is None:
                         queue.put_nowait(audio)
                         continue
-                    self.turn_audio_bytes += len(audio)
-                    # Live audio goes straight to the output device, which expects fixed
-                    # size frames; Rime's are whatever the model happened to emit.
+                    if stats["mode"] == MODE_STREAM:
+                        self.turn_audio_bytes += len(audio)
+                    # Rime emits frames of whatever size the model produced. Every context
+                    # is re-chunked, because a one-shot context is only sometimes drained
+                    # into a blob - mid-call it feeds the output device directly, and that
+                    # expects fixed size frames.
                     buffer, chunk_size = stats["buffer"], stats["chunk_size"]
                     buffer.extend(audio)
                     while chunk_size > 0 and len(buffer) >= chunk_size:
@@ -254,17 +323,11 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
                         del buffer[:chunk_size]
                     continue
 
-                # Everything that is not audio is logged exactly as Rime sent it.
-                self.log_event(
-                    "<<",
-                    {
-                        "at": now_iso(),
-                        "connection_id": self.connection_id,
-                        "context_id": context_id,
-                        "elapsed_ms": self.context_elapsed_ms(context_id),
-                        "frame": frame,
-                    },
-                )
+                # Everything that is not audio is recorded exactly as Rime sent it.
+                if stats is None:
+                    self.log_orphan("<<", frame)
+                else:
+                    self.record(stats, "<<", frame)
                 if queue is None:
                     continue
                 if "error" in frame:
@@ -277,22 +340,14 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
                     self.log_context_result(
                         context_id, "cancelled" if "cancelled" in frame else "done"
                     )
+                    # A finished context is dead: only the one-shot path cleaned up after
+                    # itself, so a turn's queue would otherwise be held for the whole call.
+                    self.context_queues.pop(context_id, None)
                     queue.put_nowait(None)
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.log_event(
-                "disconnected",
-                {
-                    "at": now_iso(),
-                    "connection_id": self.connection_id,
-                    "reason": "listener terminated",
-                    "error": str(e),
-                    "open_ms": self.connection_open_ms(),
-                    "contexts_served": self.contexts_served,
-                    "contexts_in_flight": len(self.context_queues),
-                },
-            )
+            self.log_disconnected("listener terminated", str(e))
             for queue in self.context_queues.values():
                 queue.put_nowait(None)
 
@@ -306,17 +361,9 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
                 stats["text"] += payload["text"]
             elif "start" in payload:
                 stats["audio_parameters"] = payload["start"].get("audioParameters")
-        self.log_event(
-            ">>",
-            {
-                "at": now_iso(),
-                "connection_id": self.connection_id,
-                "context_id": context_id,
-                "mode": stats["mode"] if stats else None,
-                "elapsed_ms": self.context_elapsed_ms(context_id),
-                "payload": payload,
-            },
-        )
+            self.record(stats, ">>", payload)
+        else:
+            self.log_orphan(">>", payload)
         await self.websocket.send(json.dumps(payload))
 
     def get_audio_parameters(self) -> dict:
@@ -349,7 +396,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             self.context_queues.pop(context_id, None)
             self.context_stats.pop(context_id, None)
 
-    # --- cached path: one context per message -----------------------------------------
+    # --- one-shot: a context per message ----------------------------------------------
 
     async def create_speech_uncached(
         self,
@@ -363,7 +410,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
 
         context_id = str(uuid.uuid4())
         queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
-        self.register_context(context_id, queue, mode=MODE_CACHED)
+        self.register_context(context_id, queue, mode=MODE_ONESHOT, chunk_size=chunk_size)
 
         await self.start_context(context_id)
         await self.send_operation({"contextId": context_id, "text": message.text})
@@ -374,7 +421,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             lambda seconds: self.get_message_cutoff_from_voice_speed(message, seconds, 150),
         )
 
-    # --- live path: one context per turn ----------------------------------------------
+    # --- streaming: one context per turn ----------------------------------------------
 
     def ready_synthesizer(self, chunk_size: int):
         asyncio_create_task(self.establish_connection())
@@ -389,7 +436,7 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             self.turn_text_sent = ""
             self.turn_audio_bytes = 0
             self.register_context(
-                self.turn_context_id, self.turn_queue, mode=MODE_LIVE, chunk_size=chunk_size
+                self.turn_context_id, self.turn_queue, mode=MODE_STREAM, chunk_size=chunk_size
             )
             await self.start_context(self.turn_context_id)
 
@@ -410,6 +457,10 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             self.turn_text_buffer = self.turn_text_buffer[release_at:]
         if not text.strip():
             return
+        # The agent's token collator emits a space of its own whenever a token opens with
+        # punctuation, so the stream arrives with doubled spaces the HTTP path never has.
+        # They reach Rime and the transcript alike, so they are collapsed here.
+        text = WHITESPACE_RUN.sub(" ", text).lstrip()
         text = text if text.endswith(" ") else text + " "
         self.turn_text_sent += text
         self.total_chars += len(text)
@@ -422,7 +473,9 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
         )
 
     def get_current_message_so_far(self, seconds: Optional[float]) -> str:
-        text = (self.turn_text_sent + self.turn_text_buffer).strip()
+        # Normalised as a whole: the sent half already is, the unflushed tail is not, and
+        # this string is the transcript as well as the basis for the cutoff arithmetic.
+        text = WHITESPACE_RUN.sub(" ", self.turn_text_sent + self.turn_text_buffer).strip()
         if seconds is None or not text:
             return text
         # Coda carries no word timings yet, so the elapsed text is derived from the audio
@@ -471,20 +524,11 @@ class RimeWebsocketSynthesizer(BaseSynthesizer[RimeSynthesizerConfig], InputStre
             self.listener.cancel()
             self.listener = None
         if self.websocket is not None:
-            self.log_event(
-                "disconnected",
-                {
-                    "at": now_iso(),
-                    "connection_id": self.connection_id,
-                    "reason": "torn down",
-                    "open_ms": self.connection_open_ms(),
-                    "contexts_served": self.contexts_served,
-                    "contexts_in_flight": len(self.context_queues),
-                },
-            )
+            self.log_disconnected("torn down")
             await self.websocket.close()
             self.websocket = None
         self.connection_opened_at = None
+        self.connection_opened_iso = None
         self.context_queues.clear()
         self.context_stats.clear()
         await super().tear_down()
