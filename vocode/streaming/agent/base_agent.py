@@ -31,7 +31,7 @@ from vocode.streaming.models.actions import (
 )
 from vocode.streaming.models.agent import AgentConfig, ChatGPTAgentConfig, LLMAgentConfig
 from vocode.streaming.models.events import Sender
-from vocode.streaming.models.message import BaseMessage, BotBackchannel, SilenceMessage
+from vocode.streaming.models.message import BaseMessage, BotBackchannel, LLMToken, SilenceMessage
 from vocode.streaming.models.model import TypedModel
 from vocode.streaming.models.transcriber import Transcription
 from vocode.streaming.models.transcript import Message, Transcript
@@ -299,7 +299,18 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                 agent_response_tracker=agent_response_tracker,
             )
             self.agent_responses_consumer.consume_nonblocking(event)
-            if isinstance(generated_response.message, BaseMessage):
+            if isinstance(generated_response.message, LLMToken):
+                # The streaming collator emits word fragments that already carry a
+                # trailing space, and sometimes a fragment of nothing but space. The join
+                # below supplies the separator itself, which it can because the other
+                # collator yields stripped sentences - so a token has to be stripped to
+                # land in this buffer spaced the way a sentence does. Unstripped it
+                # doubles every gap, and a phrase trigger of more than one word never
+                # matches.
+                token_text = generated_response.message.text.strip()
+                if token_text:
+                    responses_buffer = f"{responses_buffer} {token_text}"
+            elif isinstance(generated_response.message, BaseMessage):
                 responses_buffer = f"{responses_buffer} {generated_response.message.text}"
             elif isinstance(generated_response.message, EndOfTurn):
                 end_of_turn_agent_response_tracker = agent_response_tracker
