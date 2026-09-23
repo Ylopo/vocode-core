@@ -33,6 +33,7 @@ from vocode.streaming.agent.base_agent import (
     AgentResponseMessage,
     AgentResponseStop,
     BaseAgent,
+    ConferenceEventAgentInput,
     TranscriptionAgentInput,
 )
 from vocode.streaming.agent.chat_gpt_agent import ChatGPTAgent
@@ -822,6 +823,17 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             is_final=True,
         )
         self.transcriptions_worker.consume_nonblocking(transcription)
+
+    def prompt_turn_for_conference_event(self):
+        self.agent.consume_nonblocking(
+            self.interruptible_event_factory.create_interruptible_event(
+                ConferenceEventAgentInput(
+                    conversation_id=self.id,
+                    vonage_uuid=getattr(self, "vonage_uuid", None),
+                    twilio_sid=getattr(self, "twilio_sid", None),
+                ),
+            )
+        )
 
     def consume_nonblocking(self, item: bytes):
         self.transcriber.send_audio(item)

@@ -66,6 +66,7 @@ class AgentInputType(str, Enum):
     BASE = "agent_input_base"
     TRANSCRIPTION = "agent_input_transcription"
     ACTION_RESULT = "agent_input_action_result"
+    CONFERENCE_EVENT = "agent_input_conference_event"
 
 
 class AgentInput(TypedModel, type=AgentInputType.BASE.value):  # type: ignore
@@ -86,6 +87,10 @@ class ActionResultAgentInput(AgentInput, type=AgentInputType.ACTION_RESULT.value
     action_input: ActionInput
     action_output: ActionOutput
     is_quiet: bool = False
+
+
+class ConferenceEventAgentInput(AgentInput, type=AgentInputType.CONFERENCE_EVENT.value):  # type: ignore
+    pass
 
 
 class AgentResponseType(str, Enum):
@@ -419,6 +424,8 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                     confidence=1.0,
                     is_final=True,
                 )
+            elif isinstance(agent_input, ConferenceEventAgentInput):
+                transcription = Transcription(message="", confidence=1.0, is_final=True)
             else:
                 raise ValueError("Invalid AgentInput type")
 
