@@ -773,6 +773,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         self.mark_terminated(bot_disconnect=True)
         return
 
+    def should_check_human_present(self) -> bool:
+        """Whether idle silence should be met with "are you still there?". False where the question
+        would reach nobody who can act on it, in which case action_on_idle runs straight away."""
+        return True
+
     async def check_for_idle(self):
         """Asks if human is still on the line if no activity is detected, and terminates the conversation if not."""
         await self.initial_message_tracker.wait()
@@ -785,14 +790,18 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             if (
                 not self.check_for_idle_paused
             ) and time.time() - self.last_action_timestamp > self.idle_time_threshold:
-                if check_human_present_count >= check_human_present_threshold:
+                if (
+                    check_human_present_count >= check_human_present_threshold
+                    or not self.should_check_human_present()
+                ):
                     # Stop the phone call after some retries to prevent infinitely long call where human is just silent.
                     await self.action_on_idle()
-                self.is_human_still_there = False
-                await self.send_single_message(
-                    message=BaseMessage(text=random.choice(CHECK_HUMAN_PRESENT_MESSAGE_CHOICES)),
-                )
-                check_human_present_count += 1
+                else:
+                    self.is_human_still_there = False
+                    await self.send_single_message(
+                        message=BaseMessage(text=random.choice(CHECK_HUMAN_PRESENT_MESSAGE_CHOICES)),
+                    )
+                    check_human_present_count += 1
             # wait till the idle time would have passed the threshold if no action occurs
             await asyncio.sleep(self.idle_time_threshold / 2)
 
