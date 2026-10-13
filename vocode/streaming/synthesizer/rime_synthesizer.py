@@ -51,6 +51,7 @@ class RimeSynthesizer(BaseSynthesizer[RimeSynthesizerConfig]):
             (
                 "rime",
                 synthesizer_config.speaker,
+                str(synthesizer_config.model_id),
                 str(synthesizer_config.cache_speed_alpha or synthesizer_config.speed_alpha),
                 synthesizer_config.audio_encoding,
             )
