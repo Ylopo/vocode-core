@@ -302,6 +302,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         text=human_backchannel.message,
                         conversation_id=self.conversation.id,
                         is_backchannel=True,
+                        timestamp=human_backchannel.start_timestamp,
                     )
                 self.human_backchannels_buffer = []
 

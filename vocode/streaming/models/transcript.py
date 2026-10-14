@@ -128,7 +128,13 @@ class Transcript(BaseModel):
         self, include_timestamps: bool = False, mark_human_backchannels_with_brackets: bool = False
     ) -> str:
         event_strings = []
-        for event in self.event_logs:
+        # untimestamped output feeds agent prompts, so only timestamped output is put in spoken order
+        event_logs = (
+            sorted(self.event_logs, key=lambda event_log: event_log.timestamp)
+            if include_timestamps
+            else self.event_logs
+        )
+        for event in event_logs:
             if isinstance(event, Message):
                 event_string = event.to_string(
                     include_timestamp=False,
@@ -165,8 +171,9 @@ class Transcript(BaseModel):
         is_final: bool = False,
         is_backchannel: bool = False,
         publish_to_events_manager: bool = True,
+        timestamp: Optional[float] = None,
     ):
-        timestamp = time.time()
+        timestamp = timestamp or time.time()
         message = Message(
             text=text,
             sender=sender,
@@ -192,12 +199,19 @@ class Transcript(BaseModel):
                 message=message, conversation_id=conversation_id
             )
 
-    def add_human_message(self, text: str, conversation_id: str, is_backchannel: bool = False):
+    def add_human_message(
+        self,
+        text: str,
+        conversation_id: str,
+        is_backchannel: bool = False,
+        timestamp: Optional[float] = None,
+    ):
         self.add_message_from_props(
             text=text,
             sender=Sender.HUMAN,
             conversation_id=conversation_id,
             is_backchannel=is_backchannel,
+            timestamp=timestamp,
         )
 
     def add_bot_message(self, text: str, conversation_id: str, is_final: bool = False):

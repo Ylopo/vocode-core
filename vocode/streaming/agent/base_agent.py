@@ -387,6 +387,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                 self.transcript.add_human_message(
                     text=transcription.message,
                     conversation_id=agent_input.conversation_id,
+                    timestamp=transcription.start_timestamp,
                 )
             elif isinstance(agent_input, ActionResultAgentInput):
                 self.transcript.add_action_finish_log(

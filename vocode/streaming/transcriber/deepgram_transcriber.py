@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Union
 from urllib.parse import urlencode
@@ -385,6 +386,11 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
             return 0.0
         return words[-1]["end"] - words[0]["start"]
 
+    def calculate_start_timestamp(self, words: List[dict]) -> Optional[float]:
+        if len(words) == 0:
+            return None
+        return time.time() - max(0.0, self.audio_cursor - words[0]["start"])
+
     async def process(self):
         self.audio_cursor = 0.0
         self.start_ts = now()
@@ -492,6 +498,7 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
                                     is_final=True,
                                     speech_final=(deepgram_response.speech_final if isinstance(deepgram_response, DeepgramTranscriptionResult) else False),
                                     duration_seconds=self.calculate_duration(words_buffer),
+                                    start_timestamp=self.calculate_start_timestamp(words_buffer),
                                 )
                             )
                             buffer = ""

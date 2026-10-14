@@ -169,6 +169,7 @@ class Transcription(BaseModel):
     is_interrupt: bool = False
     bot_was_in_medias_res: bool = False
     duration_seconds: Optional[float] = None  # gets added only on final transcription
+    start_timestamp: Optional[float] = None  # epoch seconds when speech began; final only
 
     def __str__(self):
         return (
