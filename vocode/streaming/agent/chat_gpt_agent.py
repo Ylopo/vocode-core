@@ -18,7 +18,11 @@ from vocode.streaming.agent.openai_utils import (
     responses_get_tokens,
     vector_db_result_to_openai_chat_message,
 )
-from vocode.streaming.agent.streaming_utils import collate_response_async, stream_response_async
+from vocode.streaming.agent.streaming_utils import (
+    collate_response_async,
+    sentence_split_response_async,
+    stream_response_async,
+)
 from vocode.streaming.models.actions import FunctionCallActionTrigger
 from vocode.streaming.models.agent import ChatGPTAgentConfig
 from vocode.streaming.models.events import Sender
@@ -355,7 +359,11 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
             stream = await self._create_openai_stream(chat_parameters)
             token_gen = openai_get_tokens(stream)
 
-        response_generator = collate_response_async
+        response_generator = (
+            sentence_split_response_async
+            if self.agent_config.use_sentence_splitter
+            else collate_response_async
+        )
         using_input_streaming_synthesizer = (
             self.conversation_state_manager.using_input_streaming_synthesizer()
         )

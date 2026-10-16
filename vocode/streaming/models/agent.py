@@ -151,6 +151,7 @@ class ChatGPTAgentConfig(AgentConfig, type=AgentType.CHAT_GPT.value):  # type: i
     llm_fallback: Optional[LLMFallback] = None
     reasoning_effort: Optional[ReasoningEffortConfig] = None
     openai_endpoint: Optional[Literal["completions", "responses"]] = "responses"
+    use_sentence_splitter: bool = False
 
 
 class AnthropicAgentConfig(AgentConfig, type=AgentType.ANTHROPIC.value):  # type: ignore
