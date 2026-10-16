@@ -1,6 +1,7 @@
 import re
-from typing import AsyncGenerator, AsyncIterable, List, Literal, Optional, Union
+from typing import AsyncGenerator, AsyncIterable, List, Literal, Optional, Tuple, Union
 
+from livekit import blingfire
 from sentry_sdk.tracing import Span
 
 from vocode.streaming.models.actions import FunctionCall, FunctionFragment
@@ -10,6 +11,10 @@ SENTENCE_ENDINGS_EXCEPT_PERIOD_PATTERN = r"[?!\n\t\r]"
 
 
 SHORT_SENTENCE_CUTOFF = 3
+
+# Sentences shorter than this are merged into the next one, so e.g. "Sure." is not spoken alone
+MIN_SENTENCE_LENGTH = 20
+MIN_BUFFER_LENGTH_TO_SPLIT = 10
 
 
 def split_sentences(text: str) -> List[str]:
@@ -92,6 +97,69 @@ async def collate_response_async(
             function_name_buffer += token.name
             function_args_buffer += token.arguments
     to_return = buffer.strip()
+    if to_return:
+        yield to_return
+    if function_name_buffer and get_functions:
+        yield FunctionCall(name=function_name_buffer, arguments=function_args_buffer)
+
+
+def _detect_sentences(text: str) -> List[Tuple[str, int]]:
+    """Returns (sentence, end offset in text) pairs; the last one may be an unfinished sentence."""
+    if not text.strip():
+        return []
+
+    _, offsets = blingfire.text_to_sentences_with_offsets(text)
+    sentences: List[Tuple[str, int]] = []
+    start = 0
+    for _, end in offsets:
+        sentence = re.sub(r"\s*\n+\s*", " ", text[start:end]).strip()
+        if len(sentence) < MIN_SENTENCE_LENGTH:
+            continue
+        sentences.append((sentence, end))
+        start = end
+
+    remainder = re.sub(r"\s*\n+\s*", " ", text[start:]).strip()
+    if remainder:
+        sentences.append((remainder, len(text)))
+    return sentences
+
+
+async def sentence_split_response_async(
+    conversation_id: str,
+    gen: AsyncIterable[Union[str, FunctionFragment]],
+    get_functions: Literal[True, False] = False,
+    sentry_span: Optional[Span] = None,
+) -> AsyncGenerator[
+    Union[str, FunctionCall],
+    None,
+]:
+    """Like collate_response_async, but a sentence is only released once the next one has
+    started, and sentence boundaries come from a trained model rather than punctuation rules."""
+    buffer = ""
+    function_name_buffer = ""
+    function_args_buffer = ""
+    is_first = True
+    async for token in gen:
+        if is_first:
+            if sentry_span:
+                sentry_span.finish()
+            is_first = False
+        if not token:
+            continue
+        if isinstance(token, str):
+            buffer += token
+            if len(buffer) < MIN_BUFFER_LENGTH_TO_SPLIT:
+                continue
+            sentences = _detect_sentences(buffer)
+            for sentence, _ in sentences[:-1]:
+                yield sentence
+            if len(sentences) > 1:
+                buffer = buffer[sentences[-2][1] :]
+
+        elif isinstance(token, FunctionFragment):
+            function_name_buffer += token.name
+            function_args_buffer += token.arguments
+    to_return = " ".join(sentence for sentence, _ in _detect_sentences(buffer))
     if to_return:
         yield to_return
     if function_name_buffer and get_functions:

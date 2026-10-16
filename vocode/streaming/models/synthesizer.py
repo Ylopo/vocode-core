@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic.v1 import validator
 
@@ -230,19 +230,16 @@ class PollySynthesizerConfig(SynthesizerConfig, type=SynthesizerType.POLLY.value
     sampling_rate: int = DEFAULT_POLLY_SAMPLING_RATE
 
 
-DEFAULT_CARTESIA_MODEL_ID = "sonic-english"
-DEFAULT_CARTESIA_VOICE_ID = "f9836c6e-a0bd-460e-9d3c-f7299fa60f94"
+DEFAULT_CARTESIA_MODEL_ID = "sonic-3.5"
+DEFAULT_CARTESIA_VOICE_ID = "f786b574-daa5-4673-aa0c-cbe3e8534c02"
+DEFAULT_CARTESIA_LANGUAGE = "en"
 
 
-class CartesiaVoiceControls(BaseModel):
-    """See https://docs.cartesia.ai/user-guides/voice-control"""
-
-    speed: Optional[Union[float, str]] = None
-    emotion: Optional[List[str]] = None
-
-
+# The API key is read from CARTESIA_API_KEY rather than stored here, since configs are persisted to Redis
 class CartesiaSynthesizerConfig(SynthesizerConfig, type=SynthesizerType.CARTESIA.value):  # type: ignore
-    api_key: Optional[str] = None
     model_id: str = DEFAULT_CARTESIA_MODEL_ID
     voice_id: str = DEFAULT_CARTESIA_VOICE_ID
-    experimental_voice_controls: Optional[CartesiaVoiceControls] = None
+    language: str = DEFAULT_CARTESIA_LANGUAGE
+    speed: Optional[float] = None
+    volume: Optional[float] = None
+    emotion: Optional[str] = None
