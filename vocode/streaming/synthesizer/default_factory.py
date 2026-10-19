@@ -4,6 +4,7 @@ from vocode.streaming.models.synthesizer import (
     AzureSynthesizerConfig,
     CartesiaSynthesizerConfig,
     ElevenLabsSynthesizerConfig,
+    LiveKitSynthesizerConfig,
     PlayHtSynthesizerConfig,
     RimeSynthesizerConfig,
     StreamElementsSynthesizerConfig,
@@ -15,6 +16,7 @@ from vocode.streaming.synthesizer.base_synthesizer import BaseSynthesizer
 from vocode.streaming.synthesizer.cartesia_synthesizer import CartesiaSynthesizer
 from vocode.streaming.synthesizer.eleven_labs_synthesizer import ElevenLabsSynthesizer
 from vocode.streaming.synthesizer.eleven_labs_websocket_synthesizer import ElevenLabsWSSynthesizer
+from vocode.streaming.synthesizer.livekit_synthesizer import LiveKitSynthesizer
 from vocode.streaming.synthesizer.play_ht_synthesizer import PlayHtSynthesizer
 from vocode.streaming.synthesizer.play_ht_synthesizer_v2 import PlayHtSynthesizerV2
 from vocode.streaming.synthesizer.rime_synthesizer import RimeSynthesizer
@@ -42,6 +44,8 @@ class DefaultSynthesizerFactory(AbstractSynthesizerFactory):
                 return PlayHtSynthesizer(synthesizer_config)
         elif isinstance(synthesizer_config, RimeSynthesizerConfig):
             return RimeSynthesizer(synthesizer_config)
+        elif isinstance(synthesizer_config, LiveKitSynthesizerConfig):
+            return LiveKitSynthesizer(synthesizer_config)
         elif isinstance(synthesizer_config, StreamElementsSynthesizerConfig):
             return StreamElementsSynthesizer(synthesizer_config)
         else:

@@ -5,9 +5,14 @@ from typing import AsyncGenerator, AsyncIterator, Optional
 
 import numpy as np
 from loguru import logger
-from pyht import AsyncClient
-from pyht.client import CongestionCtrl, TTSOptions
-from pyht.protos import api_pb2
+
+try:
+    from pyht import AsyncClient
+    from pyht.client import CongestionCtrl, TTSOptions
+    from pyht.protos import api_pb2
+except ImportError:
+    # pyht is not a dependency: it pins protobuf below what the LiveKit plugins need
+    AsyncClient = CongestionCtrl = TTSOptions = api_pb2 = None  # type: ignore
 
 from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.models.message import BaseMessage
@@ -27,6 +32,8 @@ EXPERIMENTAL_VOICE_AMPLITUDE_THRESHOLD = 200
 
 class PlayHtSynthesizerV2(VocodePlayHtSynthesizer):
     def __init__(self, *args, **kwargs):
+        if AsyncClient is None:
+            raise ImportError("PlayHT v2 needs the pyht package, which is not installed")
         super().__init__(*args, **kwargs)
 
         self.playht_client_saas = AsyncClient(
