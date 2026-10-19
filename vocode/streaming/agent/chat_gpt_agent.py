@@ -134,6 +134,10 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
     def _use_responses_api(self) -> bool:
         if self._is_azure_model():
             return False
+        # gpt-6 rejects function tools with reasoning on /v1/chat/completions, so it
+        # always goes through the Responses API
+        if self.agent_config.model_name.startswith("gpt-6"):
+            return True
         return self.agent_config.openai_endpoint == "responses"
 
     def get_responses_parameters(self, messages: Optional[List] = None, use_functions: bool = True):
@@ -149,7 +153,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         instructions, input_messages = format_openai_responses_input_from_transcript(chat_messages)
 
         model_name = self.agent_config.model_name
-        is_reasoning_model = model_name.startswith("gpt-5")
+        is_reasoning_model = model_name.startswith(("gpt-5", "gpt-6"))
 
         parameters: Dict[str, Any] = {
             "model": model_name,
