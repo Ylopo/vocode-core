@@ -127,11 +127,11 @@ class _AudioConverter:
 
 
 class _Stream:
-    """One plugin stream: a whole bot turn, or a single one-off message."""
+    """The audio of a whole bot turn, or of a single one-off message. Leading messages that are
+    in the audio cache play from it; everything after them goes through one plugin stream."""
 
-    def __init__(self, label: str, stream: tts.SynthesizeStream, chunk_size: int):
+    def __init__(self, label: str, chunk_size: int):
         self.label = label
-        self.stream = stream
         self.chunk_size = chunk_size
         self.audio: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self.text = ""
@@ -140,16 +140,13 @@ class _Stream:
         self.started_at = time.monotonic()
         self.first_audio_ms: Optional[int] = None
         self.audio_bytes = 0
+        self.plugin_stream: Optional[tts.SynthesizeStream] = None
         self.reader: Optional[asyncio.Task] = None
+        # added to the plugin's word timestamps so they count from the start of this stream's audio
+        self.time_offset = 0.0
 
-    def push(self, text: str):
+    def add_text(self, text: str):
         self.text = f"{self.text} {text}".strip()
-        self.stream.push_text(text.rstrip() + " ")
-
-    def end_input(self):
-        if not self.input_ended:
-            self.stream.end_input()
-            self.input_ended = True
 
 
 class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreamingSynthesizer):
@@ -200,29 +197,58 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
 
     def open_stream(self, kind: str, chunk_size: int) -> _Stream:
         self.stream_count += 1
-        stream = _Stream(
-            f"{self.label} {kind} {self.stream_count}",
-            self.get_streaming_tts().stream(),
-            chunk_size,
-        )
-        stream.reader = asyncio_create_task(self.read_stream(stream))
+        stream = _Stream(f"{self.label} {kind} {self.stream_count}", chunk_size)
         logger.info(f"{stream.label}: started")
         return stream
 
+    def push_live(self, stream: _Stream, text: str):
+        if stream.plugin_stream is None:
+            stream.plugin_stream = self.get_streaming_tts().stream()
+            stream.time_offset = stream.audio_bytes / self.bytes_per_second
+            stream.reader = asyncio_create_task(self.read_stream(stream))
+        self.total_chars += len(text)
+        stream.add_text(text)
+        stream.plugin_stream.push_text(text.rstrip() + " ")
+        logger.info(f"{stream.label}: pushing {text!r}")
+
+    def push_cached(self, stream: _Stream, text: str, audio: bytes):
+        stream.add_text(text)
+        stream.first_audio_ms = stream.first_audio_ms or _ms_since(stream.started_at)
+        stream.audio_bytes += len(audio)
+        stream.audio.put_nowait(audio)
+        logger.info(f"{stream.label}: playing cached audio for {text!r}")
+
+    def end_input(self, stream: _Stream):
+        if stream.input_ended:
+            return
+        stream.input_ended = True
+        if stream.plugin_stream is not None:
+            stream.plugin_stream.end_input()
+        else:
+            stream.audio.put_nowait(None)
+
     async def read_stream(self, stream: _Stream):
+        assert stream.plugin_stream is not None
         converter = _AudioConverter(
             self.synthesizer_config.sampling_rate, self.synthesizer_config.audio_encoding
         )
         try:
-            async for event in stream.stream:
+            async for event in stream.plugin_stream:
                 audio = converter.convert(event.frame)
+                frame_start = stream.audio_bytes / self.bytes_per_second
                 stream.first_audio_ms = stream.first_audio_ms or _ms_since(stream.started_at)
                 stream.audio_bytes += len(audio)
                 stream.audio.put_nowait(audio)
                 timed_words = event.frame.userdata.get(USERDATA_TIMED_TRANSCRIPT) or []
                 for word in timed_words if self.word_timestamps else []:
-                    if is_given(word.start_time):
-                        stream.word_start_times.append((str(word).strip(), word.start_time))
+                    if not is_given(word.start_time):
+                        continue
+                    start = word.start_time + stream.time_offset
+                    if stream.word_start_times and start < stream.word_start_times[-1][1]:
+                        # some providers (e.g. Rime) restart their clock at every sentence
+                        stream.time_offset = frame_start - word.start_time
+                        start = frame_start
+                    stream.word_start_times.append((str(word).strip(), start))
             logger.info(
                 f"{stream.label}: done, first audio after {stream.first_audio_ms} ms, "
                 f"{stream.audio_bytes / self.bytes_per_second:.2f}s of audio in "
@@ -259,9 +285,14 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
             return await super().create_speech(
                 message, chunk_size, is_first_text_chunk, is_sole_text_chunk
             )
-        # cached audio cannot be spliced into the turn's stream, so turn sentences skip the cache
-        self.push_to_turn(message.text, chunk_size, new_turn=is_first_text_chunk)
-        return self.get_current_utterance_synthesis_result()
+        turn = self.current_turn(chunk_size, new_turn=is_first_text_chunk)
+        # cached audio can only lead the turn: once live audio is streaming, the rest stays live
+        cached = await self.get_cached_audio(message) if turn.plugin_stream is None else None
+        if cached is not None:
+            self.push_cached(turn, message.text, cached.audio_data)
+        else:
+            self.push_live(turn, message.text)
+        return self.synthesis_result(turn)
 
     async def create_speech_uncached(
         self,
@@ -270,24 +301,20 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         is_first_text_chunk: bool = False,
         is_sole_text_chunk: bool = False,
     ) -> SynthesisResult:
-        self.total_chars += len(message.text)
         stream = self.open_stream("one-off", chunk_size)
-        stream.push(message.text)
-        stream.end_input()
-        logger.info(f"{stream.label}: synthesizing {message.text!r}")
+        self.push_live(stream, message.text)
+        self.end_input(stream)
         return self.synthesis_result(stream)
 
     async def send_token_to_synthesizer(self, message: LLMToken, chunk_size: int):
-        self.push_to_turn(message.text, chunk_size)
+        self.push_live(self.current_turn(chunk_size), message.text)
 
-    def push_to_turn(self, text: str, chunk_size: int, new_turn: bool = False):
+    def current_turn(self, chunk_size: int, new_turn: bool = False) -> _Stream:
         if new_turn or self.turn is None or self.turn.input_ended:
             if self.turn is not None:
-                self.turn.end_input()
+                self.end_input(self.turn)
             self.turn = self.open_stream("turn", chunk_size)
-        self.total_chars += len(text)
-        self.turn.push(text)
-        logger.info(f"{self.turn.label}: pushing {text!r}")
+        return self.turn
 
     def get_current_utterance_synthesis_result(self) -> SynthesisResult:
         assert self.turn is not None
@@ -295,7 +322,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
 
     async def handle_end_of_turn(self):
         if self.turn is not None and not self.turn.input_ended:
-            self.turn.end_input()
+            self.end_input(self.turn)
             logger.info(f"{self.turn.label}: all text sent")
 
     def ready_synthesizer(self, chunk_size: int):
@@ -310,7 +337,8 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         stream.input_ended = True
         if stream.reader is not None:
             stream.reader.cancel()
-        await stream.stream.aclose()
+        if stream.plugin_stream is not None:
+            await stream.plugin_stream.aclose()
         stream.audio.put_nowait(None)
 
     async def chunk_generator(
