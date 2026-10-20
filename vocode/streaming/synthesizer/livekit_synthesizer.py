@@ -169,6 +169,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         self.turn: Optional[_Stream] = None
         self.stream_count = 0
         self.word_timestamps = False
+        self.torn_down = False
 
     def get_streaming_tts(self) -> tts.TTS:
         # created on first use: plugins take an aiohttp session, which needs a running event loop
@@ -258,6 +259,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
             logger.exception(f"{stream.label}: plugin stream failed")
         finally:
             stream.audio.put_nowait(None)
+        await stream.plugin_stream.aclose()
 
     def synthesis_result(self, stream: _Stream) -> SynthesisResult:
         return SynthesisResult(
@@ -330,7 +332,9 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         turn = self.turn
         if turn is not None and turn.reader is not None and not turn.reader.done():
             asyncio_create_task(self.cancel_stream(turn))
-        self.get_streaming_tts().prewarm()
+        # only the streaming connection can be opened ahead; the HTTP mode never uses it
+        if self.synthesizer_config.streaming and not self.torn_down:
+            self.get_streaming_tts().prewarm()
 
     async def cancel_stream(self, stream: _Stream):
         logger.info(f"{stream.label}: caller spoke over it, cancelling")
@@ -371,6 +375,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         return f"livekit:{c.provider}:{c.streaming}:{options}:{c.audio_encoding.value}"
 
     async def tear_down(self):
+        self.torn_down = True
         await super().tear_down()
         if self.turn is not None and self.turn.reader is not None and not self.turn.reader.done():
             await self.cancel_stream(self.turn)
