@@ -61,6 +61,7 @@ CHAT_GPT_MAX_TOKENS = {
     "gpt-5.4": 1049400,
     "gpt-5.4-mini": 399400,
     "gpt-5.6-luna": 1049400,
+    "gpt-6-luna": 1049400,
 }
 
 
@@ -81,6 +82,10 @@ def get_chat_gpt_max_tokens(model_name: str):
         model_name = "gpt-5.4"
     elif model_name.startswith("gpt-5"):
         model_name = "gpt-5.2"  # conservative fallback for unknown gpt-5 variants
+    elif model_name.startswith("gpt-6-luna"):
+        model_name = "gpt-6-luna"
+    elif model_name.startswith("gpt-6"):
+        model_name = "gpt-5.2"  # same conservative fallback for unknown gpt-6 variants
 
     if model_name in CHAT_GPT_MAX_TOKENS:
         return CHAT_GPT_MAX_TOKENS[model_name]
@@ -107,11 +112,13 @@ def get_tokenizer_info(model: str) -> Optional[TokenizerInfo]:
         model = "gpt-4"
     elif "gpt5" in model or "gpt-5" in model:
         model = "gpt-5"
+    elif "gpt6" in model or "gpt-6" in model:
+        model = "gpt-6"
 
     try:
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
-        if "gpt-5" in model:
+        if "gpt-5" in model or "gpt-6" in model:
             logger.warning(f"Warning: model not found. Using o200k_base encoding for {model}.")
             encoding = tiktoken.get_encoding("o200k_base")
         else:
@@ -144,6 +151,10 @@ def get_tokenizer_info(model: str) -> Optional[TokenizerInfo]:
         tokens_per_name = 1
     elif "gpt-5" in model:
         logger.debug("Warning: gpt-5 may update over time. Returning num tokens assuming gpt-5.4.")
+        tokens_per_message = 3
+        tokens_per_name = 1
+    elif "gpt-6" in model:
+        logger.debug("Warning: gpt-6 may update over time. Returning num tokens assuming gpt-6-luna.")
         tokens_per_message = 3
         tokens_per_name = 1
     elif "llama" in model.lower():
@@ -212,7 +223,7 @@ def num_tokens_from_functions(functions: List[dict] | None, model="gpt-3.5-turbo
     try:
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
-        if "gpt-5" in model:
+        if "gpt-5" in model or "gpt-6" in model:
             logger.warning(f"Warning: model not found. Using o200k_base encoding for {model}.")
             encoding = tiktoken.get_encoding("o200k_base")
         else:
