@@ -57,10 +57,12 @@ CHAT_GPT_MAX_TOKENS = {
     "gpt-4-turbo": 127940,
     "gpt-4o": 127940,
     "gpt-4.1": 1047000,
-    "gpt-5.2": 399400,
-    "gpt-5.4": 1049400,
-    "gpt-5.4-mini": 399400,
-    "gpt-5.6-luna": 1049400,
+    # GPT-5/6 values are OpenAI's max input (not the context window) less a 600-token buffer
+    "gpt-5.2": 271400,
+    "gpt-5.4": 921400,
+    "gpt-5.4-mini": 271400,
+    "gpt-5.6-luna": 921400,
+    "gpt-6": 921400,
 }
 
 
@@ -81,6 +83,8 @@ def get_chat_gpt_max_tokens(model_name: str):
         model_name = "gpt-5.4"
     elif model_name.startswith("gpt-5"):
         model_name = "gpt-5.2"  # conservative fallback for unknown gpt-5 variants
+    elif model_name.startswith("gpt-6"):
+        model_name = "gpt-6"
 
     if model_name in CHAT_GPT_MAX_TOKENS:
         return CHAT_GPT_MAX_TOKENS[model_name]
@@ -105,7 +109,7 @@ def get_tokenizer_info(model: str) -> Optional[TokenizerInfo]:
         model = "gpt-4o"
     elif "gpt4" in model or "gpt-4" in model:
         model = "gpt-4"
-    elif "gpt5" in model or "gpt-5" in model:
+    elif "gpt5" in model or "gpt-5" in model or "gpt-6" in model:
         model = "gpt-5"
 
     try:
@@ -208,6 +212,9 @@ def num_tokens_from_functions(functions: List[dict] | None, model="gpt-3.5-turbo
     """Return the number of tokens used by a list of functions."""
     if not functions:
         return 0
+
+    if model.startswith(("gpt-5", "gpt-6")):
+        model = "gpt-5"  # tiktoken only knows the o200k_base family as gpt-5
 
     try:
         encoding = tiktoken.encoding_for_model(model)

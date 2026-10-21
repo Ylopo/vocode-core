@@ -31,10 +31,10 @@ ChatGPTAgentConfigType = TypeVar("ChatGPTAgentConfigType", bound=ChatGPTAgentCon
 
 REASONING_TOKEN_RESERVE: Dict[str, int] = {
     "none": 0,
+    "minimal": 128,
     "low": 256,
     "medium": 1024,
     "high": 2048,
-    "xhigh": 4096,
 }
 
 
@@ -149,7 +149,7 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
         instructions, input_messages = format_openai_responses_input_from_transcript(chat_messages)
 
         model_name = self.agent_config.model_name
-        is_reasoning_model = model_name.startswith("gpt-5")
+        is_reasoning_model = model_name.startswith(("gpt-5", "gpt-6"))
 
         parameters: Dict[str, Any] = {
             "model": model_name,
@@ -164,9 +164,9 @@ class ChatGPTAgent(RespondAgent[ChatGPTAgentConfigType]):
                 effort = re_cfg.effort_level or "none"
 
             parameters["reasoning"] = {"effort": effort}
-            # xhigh is left unbounded on purpose: the reasoning pass can consume the
-            # whole budget before any visible output is produced
-            if effort != "xhigh":
+            # xhigh and max are left unbounded on purpose: the reasoning pass can consume
+            # the whole budget before any visible output is produced
+            if effort not in ("xhigh", "max"):
                 parameters["max_output_tokens"] = (
                     self.agent_config.max_tokens + REASONING_TOKEN_RESERVE.get(effort, 0)
                 )
