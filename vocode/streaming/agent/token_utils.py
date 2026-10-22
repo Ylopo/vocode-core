@@ -214,7 +214,7 @@ def num_tokens_from_functions(functions: List[dict] | None, model="gpt-3.5-turbo
         return 0
 
     if model.startswith(("gpt-5", "gpt-6")):
-        model = "gpt-5"  # tiktoken only knows the o200k_base family as gpt-5
+        model = "gpt-5"  # tiktoken has no entry for dotted gpt-5.x or gpt-6 ids
 
     try:
         encoding = tiktoken.encoding_for_model(model)
