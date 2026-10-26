@@ -151,9 +151,15 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         self.stream_count = 0
         self.word_timestamps = False
         self.torn_down = False
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        # built during call setup, so the caller's first reply does not wait for it
+        self.get_streaming_tts()
 
     def get_streaming_tts(self) -> tts.TTS:
-        # created on first use: plugins take an aiohttp session, which needs a running event loop
+        # needs a running event loop, since plugins take an aiohttp session
         if self.streaming_tts is None:
             c = self.synthesizer_config
             self.tts = build_plugin_tts(
