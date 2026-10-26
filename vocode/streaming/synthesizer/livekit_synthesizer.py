@@ -25,6 +25,8 @@ from vocode.streaming.utils.create_task import asyncio_create_task
 
 AUDIO_TIMEOUT_SECONDS = 10
 WORDS_PER_MINUTE = 150
+# Set by vocode for every plugin that accepts them, so they cannot be given in options
+MANAGED_OPTIONS = {"sample_rate", "use_websocket", "tokenizer", "http_session", "api_key"}
 
 
 def _ms_since(start: float) -> int:
@@ -70,20 +72,30 @@ def build_plugin_tts(
     http_session: Optional[aiohttp.ClientSession] = None,
 ) -> tts.TTS:
     """Creates the provider's LiveKit TTS. Raises ValueError for anything the plugin would reject."""
+    managed = sorted(MANAGED_OPTIONS & options.keys())
+    if managed:
+        raise ValueError(f"Remove {', '.join(managed)} from options; vocode sets these itself")
     try:
         tts_class = importlib.import_module(f"livekit.plugins.{provider}").TTS
     except (ImportError, AttributeError):
         raise ValueError(f"No LiveKit text-to-speech plugin is installed for {provider!r}")
 
-    # set by vocode for every plugin that accepts them, overriding the same keys in options
-    managed = {
+    parameters = inspect.signature(tts_class).parameters
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        unknown = sorted(options.keys() - parameters.keys())
+        if unknown:
+            allowed = sorted(parameters.keys() - MANAGED_OPTIONS)
+            raise ValueError(
+                f"Unknown {provider} options: {', '.join(unknown)}. Allowed: {', '.join(allowed)}"
+            )
+
+    generic = {
         "sample_rate": sampling_rate,
         "use_websocket": streaming,
         "tokenizer": _WholeSentenceTokenizer(),
         "http_session": http_session,
     }
-    accepted = inspect.signature(tts_class).parameters
-    kwargs = {**options, **{k: v for k, v in managed.items() if k in accepted and v is not None}}
+    kwargs = {**options, **{k: v for k, v in generic.items() if k in parameters and v is not None}}
     try:
         plugin_tts = tts_class(**kwargs)
     except Exception as e:
