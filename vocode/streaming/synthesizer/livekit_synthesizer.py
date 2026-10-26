@@ -25,8 +25,6 @@ from vocode.streaming.utils.create_task import asyncio_create_task
 
 AUDIO_TIMEOUT_SECONDS = 10
 WORDS_PER_MINUTE = 150
-# Set by vocode for every plugin that accepts them, so they cannot be given in options
-MANAGED_OPTIONS = {"sample_rate", "use_websocket", "tokenizer", "http_session", "api_key"}
 
 
 def _ms_since(start: float) -> int:
@@ -72,30 +70,20 @@ def build_plugin_tts(
     http_session: Optional[aiohttp.ClientSession] = None,
 ) -> tts.TTS:
     """Creates the provider's LiveKit TTS. Raises ValueError for anything the plugin would reject."""
-    managed = sorted(MANAGED_OPTIONS & options.keys())
-    if managed:
-        raise ValueError(f"Remove {', '.join(managed)} from options; vocode sets these itself")
     try:
         tts_class = importlib.import_module(f"livekit.plugins.{provider}").TTS
     except (ImportError, AttributeError):
         raise ValueError(f"No LiveKit text-to-speech plugin is installed for {provider!r}")
 
-    parameters = inspect.signature(tts_class).parameters
-    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-        unknown = sorted(options.keys() - parameters.keys())
-        if unknown:
-            allowed = sorted(parameters.keys() - MANAGED_OPTIONS)
-            raise ValueError(
-                f"Unknown {provider} options: {', '.join(unknown)}. Allowed: {', '.join(allowed)}"
-            )
-
-    generic = {
+    # set by vocode for every plugin that accepts them, overriding the same keys in options
+    managed = {
         "sample_rate": sampling_rate,
         "use_websocket": streaming,
         "tokenizer": _WholeSentenceTokenizer(),
         "http_session": http_session,
     }
-    kwargs = {**options, **{k: v for k, v in generic.items() if k in parameters and v is not None}}
+    accepted = inspect.signature(tts_class).parameters
+    kwargs = {**options, **{k: v for k, v in managed.items() if k in accepted and v is not None}}
     try:
         plugin_tts = tts_class(**kwargs)
     except Exception as e:
@@ -105,25 +93,6 @@ def build_plugin_tts(
             f"The {provider} plugin does not support streaming; set streaming to false"
         )
     return plugin_tts
-
-
-class _AudioConverter:
-    """Converts a plugin's 16-bit PCM frames to the call's sample rate and encoding."""
-
-    def __init__(self, sampling_rate: int, audio_encoding: AudioEncoding):
-        self.sampling_rate = sampling_rate
-        self.audio_encoding = audio_encoding
-        self.resample_state: Any = None
-
-    def convert(self, frame: Any) -> bytes:
-        pcm = frame.data.tobytes()
-        if frame.num_channels > 1:
-            pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
-        if frame.sample_rate != self.sampling_rate:
-            pcm, self.resample_state = audioop.ratecv(
-                pcm, 2, 1, frame.sample_rate, self.sampling_rate, self.resample_state
-            )
-        return audioop.lin2ulaw(pcm, 2) if self.audio_encoding == AudioEncoding.MULAW else pcm
 
 
 class _Stream:
@@ -230,12 +199,18 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
 
     async def read_stream(self, stream: _Stream):
         assert stream.plugin_stream is not None
-        converter = _AudioConverter(
-            self.synthesizer_config.sampling_rate, self.synthesizer_config.audio_encoding
-        )
+        c = self.synthesizer_config
+        resample_state: Any = None
         try:
             async for event in stream.plugin_stream:
-                audio = converter.convert(event.frame)
+                # plugins output mono 16-bit PCM, at the requested rate when they support one
+                audio = event.frame.data.tobytes()
+                if event.frame.sample_rate != c.sampling_rate:
+                    audio, resample_state = audioop.ratecv(
+                        audio, 2, 1, event.frame.sample_rate, c.sampling_rate, resample_state
+                    )
+                if c.audio_encoding == AudioEncoding.MULAW:
+                    audio = audioop.lin2ulaw(audio, 2)
                 frame_start = stream.audio_bytes / self.bytes_per_second
                 stream.first_audio_ms = stream.first_audio_ms or _ms_since(stream.started_at)
                 stream.audio_bytes += len(audio)
