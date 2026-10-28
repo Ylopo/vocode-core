@@ -6,6 +6,7 @@ import json
 import time
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import aiohttp
 from livekit.agents import tts
@@ -15,7 +16,7 @@ from livekit.agents.utils import is_given
 from loguru import logger
 
 from vocode.streaming.models.audio import AudioEncoding
-from vocode.streaming.models.message import BaseMessage, LLMToken, SilenceMessage
+from vocode.streaming.models.message import BaseMessage, BotBackchannel, LLMToken
 from vocode.streaming.models.synthesizer import LiveKitSynthesizerConfig
 from vocode.streaming.synthesizer.base_synthesizer import BaseSynthesizer, SynthesisResult
 from vocode.streaming.synthesizer.input_streaming_synthesizer import InputStreamingSynthesizer
@@ -27,10 +28,44 @@ AUDIO_TIMEOUT_SECONDS = 10
 WORDS_PER_MINUTE = 150
 # Set by vocode for every plugin that accepts them, so they cannot be given in options
 MANAGED_OPTIONS = {"sample_rate", "use_websocket", "tokenizer", "http_session", "api_key"}
+# Plugins send our API key to the address in their *_url options, so those may only point at the
+# provider itself. A provider missing here cannot have its address changed at all.
+PROVIDER_DOMAINS = {"cartesia": "cartesia.ai", "elevenlabs": "elevenlabs.io", "rime": "rime.ai"}
+# Rime streams its current models over WebSocket v1; its legacy ones (mist, mistv2) only over /ws3
+RIME_WEBSOCKET_V1_URLS = {
+    "coda": "wss://coda.api.rime.ai/ws",
+    "mistv3": "wss://mist.api.rime.ai/ws",
+}
 
 
 def _ms_since(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
+
+
+def _check_endpoint_options(provider: str, options: Dict[str, Any]):
+    if "allow_custom_endpoint" in options:
+        raise ValueError("Remove allow_custom_endpoint from options")
+    domain = PROVIDER_DOMAINS.get(provider)
+    for name, value in options.items():
+        if not name.endswith("_url"):
+            continue
+        url = urlparse(value) if isinstance(value, str) else None
+        host = (url.hostname or "") if url else ""
+        on_provider = domain is not None and (host == domain or host.endswith(f".{domain}"))
+        if not (url and url.scheme in ("https", "wss") and on_provider):
+            raise ValueError(
+                f"{name} must be an https or wss address on {domain}"
+                if domain
+                else f"{name} cannot be set for {provider}"
+            )
+
+
+def _with_rime_websocket_v1(options: Dict[str, Any]) -> Dict[str, Any]:
+    if options.keys() & {"base_url", "websocket_url"}:
+        return options
+    model = options.get("model", "coda")
+    url = RIME_WEBSOCKET_V1_URLS.get(model)
+    return {**options, "model": model, "websocket_url": url} if url else options
 
 
 class _WholeSentenceStream(SentenceStream):
@@ -75,6 +110,9 @@ def build_plugin_tts(
     managed = sorted(MANAGED_OPTIONS & options.keys())
     if managed:
         raise ValueError(f"Remove {', '.join(managed)} from options; vocode sets these itself")
+    _check_endpoint_options(provider, options)
+    if provider == "rime" and streaming:
+        options = _with_rime_websocket_v1(options)
     try:
         tts_class = importlib.import_module(f"livekit.plugins.{provider}").TTS
     except (ImportError, AttributeError):
@@ -91,7 +129,8 @@ def build_plugin_tts(
 
     generic = {
         "sample_rate": sampling_rate,
-        "use_websocket": streaming,
+        # a websocket_url turns streaming on by itself, and plugins reject both together
+        "use_websocket": None if "websocket_url" in options else streaming,
         "tokenizer": _WholeSentenceTokenizer(),
         "http_session": http_session,
     }
@@ -118,6 +157,7 @@ class _Stream:
         self.text = ""
         self.word_start_times: List[Tuple[str, float]] = []
         self.input_ended = False
+        self.audio_complete = False
         self.started_at = time.monotonic()
         self.first_audio_ms: Optional[int] = None
         self.audio_bytes = 0
@@ -147,6 +187,9 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         )
         self.tts: Optional[tts.TTS] = None
         self.streaming_tts: Optional[tts.TTS] = None
+        # the plugin keeps its session for the whole call, and the shared AsyncRequestor session
+        # can be closed by other code (e.g. the transfer action) while it is still in use
+        self.http_session: Optional[aiohttp.ClientSession] = None
         self.turn: Optional[_Stream] = None
         self.stream_count = 0
         self.word_timestamps = False
@@ -162,12 +205,13 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         # needs a running event loop, since plugins take an aiohttp session
         if self.streaming_tts is None:
             c = self.synthesizer_config
+            self.http_session = aiohttp.ClientSession()
             self.tts = build_plugin_tts(
                 c.provider,
                 c.options,
                 c.streaming,
                 c.sampling_rate,
-                self.async_requestor.get_session(),
+                self.http_session,
             )
             # without streaming, LiveKit's adapter sends each sentence as its own (HTTP) request
             self.streaming_tts = (
@@ -213,6 +257,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         if stream.plugin_stream is not None:
             stream.plugin_stream.end_input()
         else:
+            stream.audio_complete = True
             stream.audio.put_nowait(None)
 
     async def read_stream(self, stream: _Stream):
@@ -243,6 +288,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
                         stream.time_offset = frame_start - word.start_time
                         start = frame_start
                     stream.word_start_times.append((str(word).strip(), start))
+            stream.audio_complete = True
             logger.info(
                 f"{stream.label}: done, first audio after {stream.first_audio_ms} ms, "
                 f"{stream.audio_bytes / self.bytes_per_second:.2f}s of audio in "
@@ -263,11 +309,20 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
     def get_message_up_to(self, stream: _Stream, seconds: Optional[float]) -> str:
         if seconds is None:
             return stream.text
-        if not stream.word_start_times:
-            return self.get_message_cutoff_from_voice_speed(
-                BaseMessage(text=stream.text), seconds, WORDS_PER_MINUTE
-            )
-        return " ".join(word for word, start in stream.word_start_times if start < seconds)
+        if stream.word_start_times:
+            return " ".join(word for word, start in stream.word_start_times if start < seconds)
+        if stream.audio_complete and stream.audio_bytes:
+            # without word timings, assume the text is spoken at an even pace over the real audio
+            heard = len(stream.text) * seconds * self.bytes_per_second / stream.audio_bytes
+            words: List[str] = []
+            for word in stream.text.split():
+                if len(" ".join(words)) >= heard:
+                    break
+                words.append(word)
+            return " ".join(words)
+        return self.get_message_cutoff_from_voice_speed(
+            BaseMessage(text=stream.text), seconds, WORDS_PER_MINUTE
+        )
 
     async def create_speech(
         self,
@@ -276,7 +331,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         is_first_text_chunk: bool = False,
         is_sole_text_chunk: bool = False,
     ) -> SynthesisResult:
-        if is_sole_text_chunk or isinstance(message, SilenceMessage):
+        if is_sole_text_chunk or isinstance(message, BotBackchannel):
             return await super().create_speech(
                 message, chunk_size, is_first_text_chunk, is_sole_text_chunk
             )
@@ -321,9 +376,11 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
             logger.info(f"{self.turn.label}: all text sent")
 
     def ready_synthesizer(self, chunk_size: int):
-        # Called once the human has finished speaking: a turn still generating was talked over
+        # Called once the human has finished speaking: a turn still generating was talked over,
+        # unless it could not be interrupted
         turn = self.turn
-        if turn is not None and turn.reader is not None and not turn.reader.done():
+        interrupted = self.streaming_conversation.current_transcription_is_interrupt
+        if interrupted and turn is not None and turn.reader is not None and not turn.reader.done():
             asyncio_create_task(self.cancel_stream(turn))
         # only the streaming connection can be opened ahead; the HTTP mode never uses it
         if self.synthesizer_config.streaming and not self.torn_down:
@@ -376,4 +433,6 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
             await self.streaming_tts.aclose()
         if self.tts is not None:
             await self.tts.aclose()
+        if self.http_session is not None:
+            await self.http_session.close()
         logger.info(f"{self.label}: torn down after synthesizing {self.total_chars} characters")
