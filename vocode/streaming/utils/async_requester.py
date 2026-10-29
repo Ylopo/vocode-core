@@ -17,7 +17,9 @@ class AsyncRequestor(Singleton):
     def get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             connector = (
-                aiohttp.TCPConnector(limit=self.connection_limit) if self.connection_limit else None
+                aiohttp.TCPConnector(limit=self.connection_limit)
+                if self.connection_limit is not None
+                else None
             )
             self.session = aiohttp.ClientSession(connector=connector)
         return self.session
