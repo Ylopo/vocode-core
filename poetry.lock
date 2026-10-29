@@ -5898,4 +5898,4 @@ transcribers = ["google-cloud-speech"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "681b25d4c904ac6683f7d267cfe846d7a0fd3f22986426c542eca864003c447a"
+content-hash = "ceb9c9975d077521b63087d424c9de43ecc38f8f490d31e5180092c1f877f87c"

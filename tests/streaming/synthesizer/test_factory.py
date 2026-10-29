@@ -1,7 +1,4 @@
-from unittest.mock import MagicMock, patch
-
-from pyht import AsyncClient
-from pyht.client import CongestionCtrl
+import pytest
 from pytest_mock import MockerFixture
 
 from vocode.streaming.models.audio import AudioEncoding
@@ -41,47 +38,10 @@ def test_get_play_ht_synthesizer_v2_or_v1(mocker: MockerFixture):
     v2_constructor.assert_called_once()
 
 
-def test_create_play_ht_synthesizer_on_prem(mocker: MockerFixture):
-    with patch(
-        "vocode.streaming.synthesizer.play_ht_synthesizer_v2.AsyncClient",
-        new_callable=MagicMock,
-    ) as MockOSClient:
-        MockOSClient.AdvancedOptions = AsyncClient.AdvancedOptions
+def test_play_ht_synthesizer_v2_fails_clearly_without_pyht():
+    factory = DefaultSynthesizerFactory()
 
-        user_id = "user_id"
-        api_key = "api_key"
-        factory = DefaultSynthesizerFactory()
-
+    with pytest.raises(ImportError, match="pyht"):
         factory.create_synthesizer(
-            PlayHtSynthesizerConfig(
-                version="2", **DEFAULT_PARAMS.copy(), user_id=user_id, api_key=api_key
-            ),
+            PlayHtSynthesizerConfig(version="2", **DEFAULT_PARAMS.copy()),
         )
-
-        MockOSClient.assert_called_once_with(user_id=user_id, api_key=api_key)
-
-        MockOSClient.reset_mock()
-
-        factory.create_synthesizer(
-            PlayHtSynthesizerConfig(
-                version="2",
-                on_prem=True,
-                on_prem_provider="aws",
-                **DEFAULT_PARAMS.copy(),
-                user_id=user_id,
-                api_key=api_key
-            ),
-        )
-
-        advanced_options = AsyncClient.AdvancedOptions(
-            grpc_addr=None,
-            fallback_enabled=True,
-            congestion_ctrl=CongestionCtrl.STATIC_MAR_2023,
-        )
-
-        MockOSClient.assert_called_with(
-            user_id=user_id,
-            api_key=api_key,
-            advanced=advanced_options,
-        )
-        MockOSClient.reset_mock()
