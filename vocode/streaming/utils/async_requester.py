@@ -2,28 +2,31 @@ from typing import Optional
 
 import aiohttp
 import httpx
-from aiohttp import BaseConnector
 from pydantic import BaseModel
 
 from vocode.streaming.utils.singleton import Singleton
 
 
 class AsyncRequestor(Singleton):
-    def __init__(self, connector: Optional[BaseConnector] = None):
-        self.session = aiohttp.ClientSession(connector=connector)
+    def __init__(self, connection_limit: Optional[int] = None):
+        # aiohttp sessions and connectors need a running event loop, so they are created on first use
+        self.session: Optional[aiohttp.ClientSession] = None
         self.async_client = httpx.AsyncClient()
-        self.connector = connector
+        self.connection_limit = connection_limit
 
-    def get_session(self):
-        if self.session.closed:
-            self.session = aiohttp.ClientSession(connector=self.connector)
+    def get_session(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            connector = (
+                aiohttp.TCPConnector(limit=self.connection_limit) if self.connection_limit else None
+            )
+            self.session = aiohttp.ClientSession(connector=connector)
         return self.session
 
     def get_client(self):
         return self.async_client
 
     async def close_session(self):
-        if not self.session.closed:
+        if self.session is not None and not self.session.closed:
             await self.session.close()
 
     async def close_client(self):
