@@ -525,7 +525,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         ),
                     )
                 self.last_agent_response_tracker = item.agent_response_tracker
-                if not isinstance(agent_response_message.message, SilenceMessage):
+                # a backchannel or filler is its own message, so the reply after it starts a new one
+                if not isinstance(agent_response_message.message, BotBackchannel):
                     self.is_first_text_chunk = False
             except asyncio.CancelledError:
                 pass
@@ -854,6 +855,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.output_device.interrupt()
             self.agent.cancel_current_task()
             self.agent_responses_worker.cancel_current_task()
+            self.agent_responses_worker.is_first_text_chunk = True
             if self.actions_worker:
                 self.actions_worker.cancel_current_task()
             return num_interrupts > 0

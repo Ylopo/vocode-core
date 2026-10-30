@@ -153,6 +153,8 @@ class ChatGPTAgentConfig(AgentConfig, type=AgentType.CHAT_GPT.value):  # type: i
     llm_fallback: Optional[LLMFallback] = None
     reasoning_effort: Optional[ReasoningEffortConfig] = None
     openai_endpoint: Optional[Literal["completions", "responses"]] = "responses"
+    # sentences reach the synthesizer whole, so per-message filters still see complete text
+    use_livekit_sentence_splitter: bool = False
 
 
 class AnthropicAgentConfig(AgentConfig, type=AgentType.ANTHROPIC.value):  # type: ignore
