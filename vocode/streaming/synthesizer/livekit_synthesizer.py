@@ -27,7 +27,14 @@ from vocode.streaming.utils.create_task import asyncio_create_task
 AUDIO_TIMEOUT_SECONDS = 10
 WORDS_PER_MINUTE = 150
 # Set by vocode for every plugin that accepts them, so they cannot be given in options
-MANAGED_OPTIONS = {"sample_rate", "use_websocket", "tokenizer", "http_session", "api_key"}
+MANAGED_OPTIONS = {
+    "sample_rate",
+    "use_websocket",
+    "tokenizer",
+    "word_tokenizer",
+    "http_session",
+    "api_key",
+}
 # Plugins send our API key to the address in their *_url options, so those may only point at the
 # provider itself. A provider missing here cannot have its address changed at all.
 PROVIDER_DOMAINS = {"cartesia": "cartesia.ai", "elevenlabs": "elevenlabs.io", "rime": "rime.ai"}
@@ -132,6 +139,8 @@ def build_plugin_tts(
         # a websocket_url turns streaming on by itself, and plugins reject both together
         "use_websocket": None if "websocket_url" in options else streaming,
         "tokenizer": _WholeSentenceTokenizer(),
+        # ElevenLabs' name for it
+        "word_tokenizer": _WholeSentenceTokenizer(),
         "http_session": http_session,
     }
     kwargs = {**options, **{k: v for k, v in generic.items() if k in parameters and v is not None}}
@@ -244,6 +253,12 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         logger.info(f"{stream.label}: pushing {text!r}")
 
     def push_cached(self, stream: _Stream, text: str, audio: bytes):
+        words = text.split()
+        if self.word_timestamps and words:
+            # the live words after them will be timed, so these need times too: spread over audio
+            start = stream.audio_bytes / self.bytes_per_second
+            step = len(audio) / self.bytes_per_second / len(words)
+            stream.word_start_times += [(word, start + i * step) for i, word in enumerate(words)]
         stream.add_text(text)
         stream.first_audio_ms = stream.first_audio_ms or _ms_since(stream.started_at)
         stream.audio_bytes += len(audio)
@@ -376,15 +391,15 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
             logger.info(f"{self.turn.label}: all text sent")
 
     def ready_synthesizer(self, chunk_size: int):
-        # Called once the human has finished speaking: a turn still generating was talked over,
-        # unless it could not be interrupted
-        turn = self.turn
-        interrupted = self.streaming_conversation.current_transcription_is_interrupt
-        if interrupted and turn is not None and turn.reader is not None and not turn.reader.done():
-            asyncio_create_task(self.cancel_stream(turn))
         # only the streaming connection can be opened ahead; the HTTP mode never uses it
         if self.synthesizer_config.streaming and not self.torn_down:
             self.get_streaming_tts().prewarm()
+
+    def cancel_turn(self):
+        turn = self.turn
+        if turn is not None and not turn.audio_complete:
+            turn.input_ended = True
+            asyncio_create_task(self.cancel_stream(turn))
 
     async def cancel_stream(self, stream: _Stream):
         logger.info(f"{stream.label}: caller spoke over it, cancelling")

@@ -55,6 +55,7 @@ from vocode.streaming.synthesizer.base_synthesizer import (
     SynthesisResult,
 )
 from vocode.streaming.synthesizer.input_streaming_synthesizer import InputStreamingSynthesizer
+from vocode.streaming.synthesizer.livekit_synthesizer import LiveKitSynthesizer
 from vocode.streaming.transcriber.base_transcriber import BaseTranscriber
 from vocode.streaming.transcriber.deepgram_transcriber import DeepgramTranscriber
 from vocode.streaming.utils import (
@@ -399,6 +400,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.interruptible_event_factory = interruptible_event_factory
             self.chunk_size = self.conversation._get_synthesizer_chunk_size()
             self.last_agent_response_tracker: Optional[asyncio.Event] = None
+            self.last_agent_response_event: Optional[InterruptibleEvent] = None
             self.is_first_text_chunk = True
 
         def send_filler_audio(self, agent_response_tracker: Optional[asyncio.Event]):
@@ -427,6 +429,9 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     return
                 if isinstance(agent_response, AgentResponseStop):
                     logger.debug("Agent requested to stop")
+                    if isinstance(self.conversation.synthesizer, LiveKitSynthesizer):
+                        # a goodbye stops the agent before its EndOfTurn, so end the turn here
+                        await self.conversation.synthesizer.handle_end_of_turn()
                     if self.last_agent_response_tracker is not None:
                         await self.last_agent_response_tracker.wait()
                     item.agent_response_tracker.set()
@@ -453,6 +458,15 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     )
                     self.is_first_text_chunk = True
                     return
+
+                if (
+                    isinstance(self.conversation.synthesizer, LiveKitSynthesizer)
+                    and agent_response_message.is_first
+                ):
+                    # a new reply opens a new turn, even if an interruption kept the last one open
+                    await self.conversation.synthesizer.handle_end_of_turn()
+                    self.is_first_text_chunk = True
+                    self.last_agent_response_event = item
 
                 synthesizer_base_name: Optional[str] = (
                     synthesizer_base_name_if_should_report_to_sentry(self.conversation.synthesizer)
@@ -524,9 +538,15 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                             interruption_event=item.interruption_event,
                         ),
                     )
-                self.last_agent_response_tracker = item.agent_response_tracker
-                # a backchannel or filler is its own message, so the reply after it starts a new one
-                if not isinstance(agent_response_message.message, BotBackchannel):
+                livekit = isinstance(self.conversation.synthesizer, LiveKitSynthesizer)
+                # a LiveKit turn plays in its first sentence's result, set once all of it has played
+                if maybe_synthesis_result is not None or not livekit:
+                    self.last_agent_response_tracker = item.agent_response_tracker
+                    self.last_agent_response_event = item
+                # LiveKit plays a backchannel or filler on its own; the reply after it is a new turn
+                if not isinstance(
+                    agent_response_message.message, BotBackchannel if livekit else SilenceMessage
+                ):
                     self.is_first_text_chunk = False
             except asyncio.CancelledError:
                 pass
@@ -855,7 +875,14 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.output_device.interrupt()
             self.agent.cancel_current_task()
             self.agent_responses_worker.cancel_current_task()
-            self.agent_responses_worker.is_first_text_chunk = True
+            last_event = self.agent_responses_worker.last_agent_response_event
+            if (
+                isinstance(self.synthesizer, LiveKitSynthesizer)
+                and last_event is not None
+                and last_event.interruption_event.is_set()
+            ):
+                # the caller cut the turn's audio off, so stop synthesizing the rest of it
+                self.synthesizer.cancel_turn()
             if self.actions_worker:
                 self.actions_worker.cancel_current_task()
             return num_interrupts > 0
