@@ -162,6 +162,7 @@ class AnthropicAgentConfig(AgentConfig, type=AgentType.ANTHROPIC.value):  # type
     model_name: str = CHAT_ANTHROPIC_DEFAULT_MODEL_NAME
     max_tokens: int = LLM_AGENT_DEFAULT_MAX_TOKENS
     temperature: float = LLM_AGENT_DEFAULT_TEMPERATURE
+    use_livekit_sentence_splitter: bool = False
 
 
 class LangchainAgentConfig(AgentConfig, type=AgentType.LANGCHAIN.value):  # type: ignore

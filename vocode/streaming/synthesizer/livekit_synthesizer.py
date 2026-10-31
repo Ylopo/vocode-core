@@ -75,6 +75,21 @@ def _with_rime_websocket_v1(options: Dict[str, Any]) -> Dict[str, Any]:
     return {**options, "model": model, "websocket_url": url} if url else options
 
 
+def _with_elevenlabs_types(options: Dict[str, Any]) -> Dict[str, Any]:
+    """JSON gives plain objects where the ElevenLabs plugin expects its own types."""
+    from livekit.plugins import elevenlabs
+
+    options = dict(options)
+    if "voice_settings" in options:
+        options["voice_settings"] = elevenlabs.VoiceSettings(**options["voice_settings"])
+    if "pronunciation_dictionary_locators" in options:
+        options["pronunciation_dictionary_locators"] = [
+            elevenlabs.PronunciationDictionaryLocator(**locator)
+            for locator in options["pronunciation_dictionary_locators"]
+        ]
+    return options
+
+
 class _WholeSentenceStream(SentenceStream):
     def __init__(self):
         super().__init__()
@@ -114,12 +129,18 @@ def build_plugin_tts(
     http_session: Optional[aiohttp.ClientSession] = None,
 ) -> tts.TTS:
     """Creates the provider's LiveKit TTS. Raises ValueError for anything the plugin would reject."""
+    # a dotted name such as "rime.tts" would load the same plugin under a name the rules don't match
+    if not provider.isidentifier():
+        raise ValueError(f"No LiveKit text-to-speech plugin is installed for {provider!r}")
     managed = sorted(MANAGED_OPTIONS & options.keys())
     if managed:
         raise ValueError(f"Remove {', '.join(managed)} from options; vocode sets these itself")
     _check_endpoint_options(provider, options)
     if provider == "rime" and streaming:
         options = _with_rime_websocket_v1(options)
+    # the plugin decodes Cartesia audio as 16-bit PCM whatever encoding it asks for
+    if provider == "cartesia" and options.get("encoding", "pcm_s16le") != "pcm_s16le":
+        raise ValueError("Cartesia audio must use the pcm_s16le encoding; remove encoding")
     try:
         tts_class = importlib.import_module(f"livekit.plugins.{provider}").TTS
     except (ImportError, AttributeError):
@@ -145,6 +166,8 @@ def build_plugin_tts(
     }
     kwargs = {**options, **{k: v for k, v in generic.items() if k in parameters and v is not None}}
     try:
+        if provider == "elevenlabs":
+            kwargs = _with_elevenlabs_types(kwargs)
         plugin_tts = tts_class(**kwargs)
     except Exception as e:
         raise ValueError(f"Invalid {provider} options: {e}") from e
@@ -177,6 +200,17 @@ class _Stream:
 
     def add_text(self, text: str):
         self.text = f"{self.text} {text}".strip()
+
+
+class LiveKitSynthesisResult(SynthesisResult):
+    def __init__(self, chunk_generator, get_message_up_to, stream: _Stream):
+        super().__init__(chunk_generator, get_message_up_to)
+        self.stream = stream
+
+    @property
+    def audio_complete(self) -> bool:
+        """False once the audio has ended if the stream failed, timed out or was cancelled."""
+        return self.stream.audio_complete
 
 
 class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreamingSynthesizer):
@@ -315,10 +349,11 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
             stream.audio.put_nowait(None)
         await stream.plugin_stream.aclose()
 
-    def synthesis_result(self, stream: _Stream) -> SynthesisResult:
-        return SynthesisResult(
+    def synthesis_result(self, stream: _Stream) -> LiveKitSynthesisResult:
+        return LiveKitSynthesisResult(
             self.chunk_generator(stream),
             lambda seconds: self.get_message_up_to(stream, seconds),
+            stream,
         )
 
     def get_message_up_to(self, stream: _Stream, seconds: Optional[float]) -> str:

@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 
 import pytest
 from pytest_mock import MockerFixture
@@ -36,6 +37,13 @@ def provider_api_keys(monkeypatch: pytest.MonkeyPatch):
 async def test_options_cannot_send_the_api_key_outside_the_provider(provider, options):
     with pytest.raises(ValueError):
         build_plugin_tts(provider, options, True, 8000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["rime.tts", "elevenlabs.tts", "cartesia.tts"])
+async def test_a_plugin_can_only_be_chosen_by_its_plain_name(provider):
+    with pytest.raises(ValueError, match="No LiveKit"):
+        build_plugin_tts(provider, {}, True, 8000)
 
 
 @pytest.mark.asyncio
@@ -143,6 +151,37 @@ async def test_elevenlabs_sends_each_sentence_as_soon_as_it_is_pushed():
     assert isinstance(plugin_tts._opts.word_tokenizer, _WholeSentenceTokenizer)
     with pytest.raises(ValueError, match="word_tokenizer"):
         build_plugin_tts("elevenlabs", {"word_tokenizer": None}, True, 8000)
+    await plugin_tts.aclose()
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_voice_settings_and_dictionaries_saved_as_json_work_on_a_call():
+    plugin_tts = build_plugin_tts(
+        "elevenlabs",
+        {
+            "voice_id": "abc",
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+            "pronunciation_dictionary_locators": [
+                {"pronunciation_dictionary_id": "d", "version_id": "v"}
+            ],
+        },
+        True,
+        8000,
+    )
+
+    # what the plugin does with them on every request
+    assert dataclasses.asdict(plugin_tts._opts.voice_settings)["stability"] == 0.5
+    assert plugin_tts._opts.pronunciation_dictionary_locators[0].pronunciation_dictionary_id == "d"
+    with pytest.raises(ValueError, match="Invalid elevenlabs options"):
+        build_plugin_tts("elevenlabs", {"voice_settings": {"loudness": 1}}, True, 8000)
+    await plugin_tts.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cartesia_only_accepts_the_encoding_its_audio_is_decoded_as():
+    with pytest.raises(ValueError, match="pcm_s16le"):
+        build_plugin_tts("cartesia", {"encoding": "pcm_mulaw"}, True, 8000)
+    plugin_tts = build_plugin_tts("cartesia", {"encoding": "pcm_s16le"}, True, 8000)
     await plugin_tts.aclose()
 
 
