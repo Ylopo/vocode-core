@@ -25,6 +25,7 @@ class SynthesizerType(str, Enum):
     BARK = "synthesizer_bark"
     POLLY = "synthesizer_polly"
     CARTESIA = "synthesizer_cartesia"
+    LIVEKIT = "synthesizer_livekit"
 
 
 class SentimentConfig(BaseModel):
@@ -246,3 +247,11 @@ class CartesiaSynthesizerConfig(SynthesizerConfig, type=SynthesizerType.CARTESIA
     model_id: str = DEFAULT_CARTESIA_MODEL_ID
     voice_id: str = DEFAULT_CARTESIA_VOICE_ID
     experimental_voice_controls: Optional[CartesiaVoiceControls] = None
+
+
+class LiveKitSynthesizerConfig(SynthesizerConfig, type=SynthesizerType.LIVEKIT.value):  # type: ignore
+    """Any LiveKit TTS plugin: `provider` is its module under livekit.plugins, `options` its TTS kwargs."""
+
+    provider: str
+    streaming: bool = True
+    options: Dict[str, Any] = {}

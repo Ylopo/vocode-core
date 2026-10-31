@@ -10,7 +10,11 @@ from vocode.streaming.action.abstract_factory import AbstractActionFactory
 from vocode.streaming.action.default_factory import DefaultActionFactory
 from vocode.streaming.agent.anthropic_utils import format_anthropic_chat_messages_from_transcript
 from vocode.streaming.agent.base_agent import GeneratedResponse, RespondAgent, StreamedResponse
-from vocode.streaming.agent.streaming_utils import collate_response_async, stream_response_async
+from vocode.streaming.agent.streaming_utils import (
+    collate_response_async,
+    livekit_sentence_response_async,
+    stream_response_async,
+)
 from vocode.streaming.models.actions import FunctionFragment
 from vocode.streaming.models.agent import AnthropicAgentConfig
 from vocode.streaming.models.message import BaseMessage, LLMToken
@@ -93,7 +97,9 @@ class AnthropicAgent(RespondAgent[AnthropicAgentConfig]):
         using_input_streaming_synthesizer = (
             self.conversation_state_manager.using_input_streaming_synthesizer()
         )
-        if using_input_streaming_synthesizer:
+        if self.agent_config.use_livekit_sentence_splitter:
+            response_generator = livekit_sentence_response_async
+        elif using_input_streaming_synthesizer:
             response_generator = stream_response_async
         async for message in response_generator(
             conversation_id=conversation_id,

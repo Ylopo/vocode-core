@@ -1,6 +1,8 @@
+import asyncio
 import re
 from typing import AsyncGenerator, AsyncIterable, List, Literal, Optional, Union
 
+from livekit.agents.tokenize import blingfire
 from sentry_sdk.tracing import Span
 
 from vocode.streaming.models.actions import FunctionCall, FunctionFragment
@@ -94,6 +96,49 @@ async def collate_response_async(
     to_return = buffer.strip()
     if to_return:
         yield to_return
+    if function_name_buffer and get_functions:
+        yield FunctionCall(name=function_name_buffer, arguments=function_args_buffer)
+
+
+async def livekit_sentence_response_async(
+    conversation_id: str,
+    gen: AsyncIterable[Union[str, FunctionFragment]],
+    get_functions: Literal[True, False] = False,
+    sentry_span: Optional[Span] = None,
+) -> AsyncGenerator[
+    Union[str, FunctionCall],
+    None,
+]:
+    """Splits the LLM output into sentences with LiveKit's tokenizer, as LiveKit's agents do."""
+    sentences = blingfire.SentenceTokenizer().stream()
+    function_name_buffer = ""
+    function_args_buffer = ""
+
+    async def feed_tokens():
+        nonlocal function_name_buffer, function_args_buffer
+        is_first = True
+        try:
+            async for token in gen:
+                if is_first:
+                    if sentry_span:
+                        sentry_span.finish()
+                    is_first = False
+                if isinstance(token, str):
+                    if token:
+                        sentences.push_text(token)
+                elif isinstance(token, FunctionFragment):
+                    function_name_buffer += token.name
+                    function_args_buffer += token.arguments
+        finally:
+            sentences.end_input()
+
+    feeder = asyncio.create_task(feed_tokens())
+    try:
+        async for sentence in sentences:
+            yield sentence.token
+        await feeder
+    finally:
+        feeder.cancel()
     if function_name_buffer and get_functions:
         yield FunctionCall(name=function_name_buffer, arguments=function_args_buffer)
 
