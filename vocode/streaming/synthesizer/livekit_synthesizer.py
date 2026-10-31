@@ -317,13 +317,16 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
 
     def synthesis_result(self, stream: _Stream) -> SynthesisResult:
         return SynthesisResult(
-            self.chunk_generator(stream.audio, stream.chunk_size, stream.label),
+            self.chunk_generator(stream),
             lambda seconds: self.get_message_up_to(stream, seconds),
         )
 
     def get_message_up_to(self, stream: _Stream, seconds: Optional[float]) -> str:
         if seconds is None:
-            return stream.text
+            if stream.audio_complete:
+                return stream.text
+            # the stream failed, timed out or was cancelled: only the audio it produced was heard
+            seconds = stream.audio_bytes / self.bytes_per_second
         if stream.word_start_times:
             return " ".join(word for word, start in stream.word_start_times if start < seconds)
         if stream.audio_complete and stream.audio_bytes:
@@ -402,7 +405,7 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
             asyncio_create_task(self.cancel_stream(turn))
 
     async def cancel_stream(self, stream: _Stream):
-        logger.info(f"{stream.label}: caller spoke over it, cancelling")
+        logger.info(f"{stream.label}: cancelling")
         stream.input_ended = True
         if stream.reader is not None:
             stream.reader.cancel()
@@ -411,14 +414,18 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
         stream.audio.put_nowait(None)
 
     async def chunk_generator(
-        self, audio_queue: asyncio.Queue[Optional[bytes]], chunk_size: int, label: str
+        self, stream: _Stream
     ) -> AsyncGenerator[SynthesisResult.ChunkResult, None]:
         buffer = bytearray()
+        chunk_size = stream.chunk_size
         while True:
             try:
-                audio = await asyncio.wait_for(audio_queue.get(), timeout=AUDIO_TIMEOUT_SECONDS)
+                audio = await asyncio.wait_for(stream.audio.get(), timeout=AUDIO_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
-                logger.error(f"{label}: no audio received for {AUDIO_TIMEOUT_SECONDS}s, giving up")
+                logger.error(
+                    f"{stream.label}: no audio received for {AUDIO_TIMEOUT_SECONDS}s, giving up"
+                )
+                asyncio_create_task(self.cancel_stream(stream))
                 break
             if audio is None:
                 break
@@ -437,7 +444,8 @@ class LiveKitSynthesizer(BaseSynthesizer[LiveKitSynthesizerConfig], InputStreami
     def get_voice_identifier(cls, synthesizer_config: LiveKitSynthesizerConfig):
         c = synthesizer_config
         options = json.dumps(c.options, sort_keys=True)
-        return f"livekit:{c.provider}:{c.streaming}:{options}:{c.audio_encoding.value}"
+        audio = f"{c.audio_encoding.value}:{c.sampling_rate}"
+        return f"livekit:{c.provider}:{c.streaming}:{options}:{audio}"
 
     async def tear_down(self):
         self.torn_down = True
