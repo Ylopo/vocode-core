@@ -1010,6 +1010,13 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             audio_chunks.append(audio_chunk)
             processed_events.append(processed_event)
 
+        # a LiveKit turn cancelled before its first chunk ends with none, so the loop never stopped
+        if (
+            not audio_chunks
+            and stop_event.is_set()
+            and isinstance(self.synthesizer, LiveKitSynthesizer)
+        ):
+            interrupted_before_all_chunks_sent = True
         logger.debug("Finished sending chunks to the output device")
 
         if processed_events:
